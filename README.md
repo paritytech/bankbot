@@ -1,0 +1,3 @@
+# Bankbot
+
+The benchmarking bot
