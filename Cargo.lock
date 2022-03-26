@@ -368,6 +368,8 @@ name = "bankbot"
 version = "0.1.0"
 dependencies = [
  "async-std",
+ "chrono",
+ "indexmap",
  "log",
  "octocrab",
  "pretty_env_logger",

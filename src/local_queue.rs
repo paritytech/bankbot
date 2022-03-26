@@ -1,31 +1,37 @@
 use crate::Queue;
+use indexmap::IndexMap;
+use std::hash::Hash;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {}
 
-pub struct LocalQueue<I> {
-    queue: Vec<I>,
+#[derive(Debug)]
+pub struct LocalQueue<Id, Item> {
+    queue: IndexMap<Id, Item>,
 }
 
-impl<I> LocalQueue<I> {
+impl<Id, Item> LocalQueue<Id, Item> {
     pub fn new() -> Self {
-        let queue = Vec::new();
+        let queue = IndexMap::new();
         Self { queue }
     }
 }
 
-impl<I> Queue for LocalQueue<I> {
+impl<Id, Item> Queue for LocalQueue<Id, Item>
+where
+    Id: Hash + Eq,
+{
     type Err = Error;
-    type Item = I;
+    type Id = Id;
+    type Item = Item;
 
-    fn enqueue(&mut self, item: Self::Item) -> Result<(), Self::Err> {
-        let res = self.queue.push(item);
-        Ok(res)
+    fn add(&mut self, id: Self::Id, item: Self::Item) -> usize {
+        self.queue.insert_full(id, item).0
     }
 
-    fn dequeue(&mut self) -> Option<Self::Item> {
+    fn remove(&mut self) -> Option<Self::Item> {
         if !self.queue.is_empty() {
-            Some(self.queue.remove(0))
+            self.queue.shift_remove_index(0).map(|(_k, v)| v)
         } else {
             None
         }
@@ -34,11 +40,14 @@ impl<I> Queue for LocalQueue<I> {
     fn len(&self) -> usize {
         self.queue.len()
     }
+
+    fn pos(&self, id: Self::Id) -> Option<usize> {
+        self.queue.get_index_of(&id)
+    }
 }
 
-impl<I> Default for LocalQueue<I> {
+impl<Id, Item> Default for LocalQueue<Id, Item> {
     fn default() -> Self {
         Self::new()
     }
 }
-

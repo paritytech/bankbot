@@ -1,8 +1,7 @@
+use bankbot::{LocalQueue, Queue};
+use std::convert::TryInto;
 use structopt::StructOpt;
 use tide_github::Event;
-use bankbot::{Queue, LocalQueue};
-use std::convert::TryInto;
-use std::sync::{Arc, Mutex};
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "bankbot", about = "The benchmarking bot")]
@@ -24,6 +23,7 @@ struct Config {
     command_prefix: String,
 }
 
+#[allow(unused)]
 struct Job {
     command: String,
     user: octocrab::models::User,
@@ -40,19 +40,32 @@ async fn main() -> tide::Result<()> {
 
     let command_prefix = config.command_prefix.clone();
 
-    let queue = Arc::new(Mutex::new(LocalQueue::new()));
+    let queue = std::sync::RwLock::new(LocalQueue::new());
 
     let mut app = tide::new();
     let github = tide_github::new(&config.webhook_secret)
         .on(Event::IssueComment, move |payload| {
-            log::debug!("Received payload for repository {}", payload.repository.name);
-            let payload: tide_github::payload::IssueCommentPayload = payload.try_into().unwrap();
+            let payload: tide_github::payload::IssueCommentPayload = match payload.try_into() {
+                Ok(payload) => payload,
+                Err(e) => {
+                    log::warn!("Failed to parse payload: {}", e);
+                    return;
+                }
+            };
 
             if let Some(body) = payload.comment.body {
                 if body.starts_with(&command_prefix) {
-                    let command = body.split_once('\n')
+                    let command = body
+                        .split_once('\n')
                         .map(|(cmd, _)| cmd.into())
                         .unwrap_or(body);
+
+                    let id = format!(
+                        "{}_{}_{}",
+                        payload.repository.name,
+                        command,
+                        chrono::Utc::now().timestamp_nanos()
+                    );
 
                     let job = Job {
                         command,
@@ -61,8 +74,14 @@ async fn main() -> tide::Result<()> {
                         issue: payload.issue,
                     };
 
-                    let mut queue = queue.lock().unwrap();
-                    queue.enqueue(job).unwrap();
+                    match queue.write() {
+                        Ok(mut queue) => {
+                            queue.add(id, job);
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to queue job: {}", e)
+                        }
+                    }
                 }
             }
         })
