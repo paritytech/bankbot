@@ -1,7 +1,8 @@
-use bankbot::{LocalQueue, Queue};
+use bankbot::{Job, LocalQueue, Queue};
 use std::convert::TryInto;
 use structopt::StructOpt;
 use tide_github::Event;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "bankbot", about = "The benchmarking bot")]
@@ -23,12 +24,22 @@ struct Config {
     command_prefix: String,
 }
 
-#[allow(unused)]
-struct Job {
-    command: String,
-    user: octocrab::models::User,
-    repository: octocrab::models::Repository,
-    issue: octocrab::models::issues::Issue,
+type State = Arc<Mutex<LocalQueue<String, Job>>>;
+
+async fn remove_from_queue(req: tide::Request<State>) -> tide::Result {
+    let queue = req.state();
+    match queue.lock() {
+        Ok(mut queue) => {
+            match queue.remove() {
+                    Some(job) => Ok(tide::Body::from_json(&job)?.into()),
+                    None => Ok(tide::Response::builder(404).build()),
+            }
+        },
+        Err(e) => {
+            log::warn!("Failed to access queue mutex: {}", e);
+            Ok(tide::Response::builder(500).build())
+        }
+    }
 }
 
 #[async_std::main]
@@ -40,9 +51,9 @@ async fn main() -> tide::Result<()> {
 
     let command_prefix = config.command_prefix.clone();
 
-    let queue = std::sync::RwLock::new(LocalQueue::new());
+    let queue = Arc::new(Mutex::new(LocalQueue::new()));
 
-    let mut app = tide::new();
+    let mut app = tide::with_state(queue.clone());
     let github = tide_github::new(&config.webhook_secret)
         .on(Event::IssueComment, move |payload| {
             let payload: tide_github::payload::IssueCommentPayload = match payload.try_into() {
@@ -74,7 +85,7 @@ async fn main() -> tide::Result<()> {
                         issue: payload.issue,
                     };
 
-                    match queue.write() {
+                    match queue.lock() {
                         Ok(mut queue) => {
                             queue.add(id, job);
                         }
@@ -87,6 +98,25 @@ async fn main() -> tide::Result<()> {
         })
         .build();
     app.at("/").nest(github);
+    app.at("/queue/remove").post(remove_from_queue);
+
+    let self_url = format!("http://{}:{}", config.address, config.port);
+
+    async_std::task::spawn(async move {
+        loop {
+            if let Ok(mut res) = surf::post(format!("{}/queue/remove", self_url)).await {
+                if res.status() == surf::StatusCode::Ok {
+                    match res.body_json::<Job>().await {
+                        Ok(job) => {
+                            job.run();
+                        },
+                        Err(e) => log::warn!("Failed to retrieve job from queue: {}", e),
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
+    });
 
     app.listen((config.address, config.port)).await?;
     Ok(())

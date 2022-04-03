@@ -1,4 +1,7 @@
 mod local_queue;
+mod job;
+
+pub use job::Job;
 pub use local_queue::LocalQueue;
 
 pub trait Queue {
