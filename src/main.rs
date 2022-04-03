@@ -1,8 +1,8 @@
 use bankbot::{Job, LocalQueue, Queue};
 use std::convert::TryInto;
+use std::sync::{Arc, Mutex};
 use structopt::StructOpt;
 use tide_github::Event;
-use std::sync::{Arc, Mutex};
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "bankbot", about = "The benchmarking bot")]
@@ -29,11 +29,9 @@ type State = Arc<Mutex<LocalQueue<String, Job>>>;
 async fn remove_from_queue(req: tide::Request<State>) -> tide::Result {
     let queue = req.state();
     match queue.lock() {
-        Ok(mut queue) => {
-            match queue.remove() {
-                    Some(job) => Ok(tide::Body::from_json(&job)?.into()),
-                    None => Ok(tide::Response::builder(404).build()),
-            }
+        Ok(mut queue) => match queue.remove() {
+            Some(job) => Ok(tide::Body::from_json(&job)?.into()),
+            None => Ok(tide::Response::builder(404).build()),
         },
         Err(e) => {
             log::warn!("Failed to access queue mutex: {}", e);
@@ -109,7 +107,7 @@ async fn main() -> tide::Result<()> {
                     match res.body_json::<Job>().await {
                         Ok(job) => {
                             job.run();
-                        },
+                        }
                         Err(e) => log::warn!("Failed to retrieve job from queue: {}", e),
                     }
                 }

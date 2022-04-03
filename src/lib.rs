@@ -1,5 +1,5 @@
-mod local_queue;
 mod job;
+mod local_queue;
 
 pub use job::Job;
 pub use local_queue::LocalQueue;
