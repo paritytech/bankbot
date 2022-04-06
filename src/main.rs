@@ -141,8 +141,11 @@ async fn main() -> tide::Result<()> {
         async fn run<P: AsRef<std::path::Path> + AsRef<std::ffi::OsStr>>(
             repos_root: P,
             job: Job,
-        ) -> anyhow::Result<()> {
-            job.checkout(&repos_root)?.run()?;
+        ) -> Result<(), String> {
+            job.checkout(&repos_root)
+                .map_err(|e| format!("{}", e))?
+                .run()
+                .map_err(|e| format!("{}", e))?;
             Ok(())
         }
 

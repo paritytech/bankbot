@@ -367,7 +367,6 @@ dependencies = [
 name = "bankbot"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-std",
  "chrono",
  "git2",
