@@ -1,7 +1,9 @@
 use bankbot::{Job, LocalQueue, Queue};
 use std::convert::TryInto;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use structopt::StructOpt;
+use tide::prelude::*;
 use tide_github::Event;
 
 #[derive(Debug, StructOpt)]
@@ -22,21 +24,56 @@ struct Config {
     /// Bot command prefix
     #[structopt(short, long, env, default_value = "/benchbot")]
     command_prefix: String,
+    /// Repositories root working directory
+    #[structopt(short, long, env, default_value = "./repos")]
+    repos_root: PathBuf,
 }
 
 type State = Arc<Mutex<LocalQueue<String, Job>>>;
 
 async fn remove_from_queue(req: tide::Request<State>) -> tide::Result {
-    let queue = req.state();
-    match queue.lock() {
-        Ok(mut queue) => match queue.remove() {
-            Some(job) => Ok(tide::Body::from_json(&job)?.into()),
-            None => Ok(tide::Response::builder(404).build()),
-        },
-        Err(e) => {
-            log::warn!("Failed to access queue mutex: {}", e);
-            Ok(tide::Response::builder(500).build())
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct Options {
+        long_poll: bool,
+    }
+
+    // We lock the Mutex in a separate scope so it can be unlocked (dropped)
+    // before we try to .await another future (MutexGuard is not Send).
+    let recv = {
+        let queue = req.state();
+
+        let mut queue = match queue.lock() {
+            Ok(queue) => queue,
+            Err(e) => {
+                log::warn!("Failed to access queue mutex: {}", e);
+                return Ok(tide::Response::builder(500).build());
+            }
+        };
+
+        match queue.remove() {
+            Some(job) => return Ok(tide::Body::from_json(&job)?.into()),
+            None => {
+                let Options { long_poll } = req.query()?;
+                if long_poll {
+                    let (send, recv) = async_std::channel::bounded(1);
+                    queue.register_watcher(send);
+                    Some(recv)
+                } else {
+                    None
+                }
+            }
         }
+    };
+
+    match recv {
+        Some(recv) => {
+            let mut res = tide::Response::new(200);
+            let job = recv.recv().await?;
+            res.set_body(tide::Body::from_json(&job)?);
+            Ok(res)
+        }
+        None => Ok(tide::Response::builder(404).build()),
     }
 }
 
@@ -99,20 +136,41 @@ async fn main() -> tide::Result<()> {
     app.at("/queue/remove").post(remove_from_queue);
 
     let self_url = format!("http://{}:{}", config.address, config.port);
-
+    let repos_root = config.repos_root.clone();
     async_std::task::spawn(async move {
-        loop {
-            if let Ok(mut res) = surf::post(format!("{}/queue/remove", self_url)).await {
-                if res.status() == surf::StatusCode::Ok {
-                    match res.body_json::<Job>().await {
-                        Ok(job) => {
-                            job.run();
-                        }
-                        Err(e) => log::warn!("Failed to retrieve job from queue: {}", e),
-                    }
-                }
+        async fn run<P: AsRef<std::path::Path> + AsRef<std::ffi::OsStr>>(
+            repos_root: P,
+            job: Job,
+        ) -> anyhow::Result<()> {
+            job.checkout(&repos_root)?.run()?;
+            Ok(())
+        }
+
+        async fn get_job<D: std::fmt::Display>(url: D) -> Result<Job, String> {
+            let mut res = surf::post(format!("{}/queue/remove?long_poll=true", url))
+                .await
+                .map_err(|e| format!("{}", e))?;
+            match res.body_json::<Job>().await {
+                Ok(job) => Ok(job),
+                Err(e) => Err(format!("{}", e)),
             }
-            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
+
+        loop {
+            match get_job(&self_url).await {
+                Ok(job) => {
+                    log::info!(
+                        "Processing command {} by user {} from repo {}",
+                        job.command,
+                        job.user.login,
+                        job.repository.url
+                    );
+                    if let Err(e) = run(&repos_root, job).await {
+                        log::warn!("Error running job: {}", e);
+                    };
+                }
+                Err(e) => log::warn!("Failed to retrieve job from queue: {}", e),
+            }
         }
     });
 

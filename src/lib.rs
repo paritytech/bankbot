@@ -9,7 +9,7 @@ pub trait Queue {
     type Id;
     type Item;
 
-    fn add(&mut self, id: Self::Id, item: Self::Item) -> usize;
+    fn add(&mut self, id: Self::Id, item: Self::Item);
     fn remove(&mut self) -> Option<Self::Item>;
     fn len(&self) -> usize;
     fn pos(&self, id: Self::Id) -> Option<usize>;
