@@ -1,6 +1,7 @@
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Failed to clone repository: {source}")]
@@ -12,8 +13,12 @@ pub enum Error {
     NoScriptFound(#[from] std::io::Error),
     #[error("Failed to find a URL to clone the repository")]
     NoCloneUrl,
+    #[error("Missing bot command")]
+    NoCmd,
     #[error("Failed to checkout repository because path {0} exists but is not a directory")]
     NoDirectory(std::path::PathBuf),
+    #[error("Failed to execute script")]
+    ScriptExecution(#[from] Box<rhai::EvalAltResult>),
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -117,18 +122,24 @@ pub struct CheckedoutJob {
 
 impl CheckedoutJob {
     pub fn run(&self) -> Result<(), Error> {
-        let script_dir = self.dir.join(".github/benchbot");
+        let cmd = self
+            .job
+            .command
+            .split(' ')
+            .nth(1)
+            .map(|cmd| format!("{}.rhai", cmd))
+            .ok_or(Error::NoCmd)?;
+        let rel_script_path = std::path::Path::new(".github").join(cmd);
+        let script_path = self.dir.join(&rel_script_path);
 
-        log::debug!("Looking for scripts in {:?}", script_dir);
-        for entry in std::fs::read_dir(script_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if let Some(extension) = path.extension() {
-                if extension == "rhai" {
-                    log::debug!("About to execute script {:?}", path)
-                }
-            }
-        }
+        let engine = rhai::Engine::new();
+
+        log::debug!("Executing {:?} in {:?}", rel_script_path, self.dir);
+
+        match engine.eval_file::<i64>(script_path) {
+            Ok(e) => log::debug!("Script result: {}", e),
+            Err(e) => log::warn!("Failed to execute script: {:?}", e),
+        };
 
         Ok(())
     }
