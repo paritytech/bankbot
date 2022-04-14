@@ -42,6 +42,7 @@ impl Job {
         std::path::PathBuf: From<R>,
     {
         let dir = self.repo_dir(root);
+        let branch = self.pr_branch();
         let repo = match std::fs::metadata(&dir) {
             Ok(metadata) if metadata.is_dir() => git2::Repository::open(&dir)?,
             Err(_) => {
@@ -65,20 +66,16 @@ impl Job {
             }
         };
 
-        // Make sure the branch we will fetch to exists
-        let branch = self.pr_branch();
-        repo.branch(&branch, &repo.head()?.peel_to_commit()?, true)?;
         log::debug!("Fetching {} in {:?}", branch, dir);
         repo.find_remote("origin")?.fetch(
-            &[&format!("{}:refs/heads/{}", branch, branch)],
+            &[&format!("refs/{}:refs/heads/{}", branch, branch)],
             None,
             None,
         )?;
 
-        let branch_obj = repo.revparse_single(&branch)?;
-        log::debug!("Resetting {:?} to {}", dir, branch);
+        let rev = repo.revparse_single("FETCH_HEAD")?;
         repo.reset(
-            &branch_obj,
+            &rev,
             git2::ResetType::Hard,
             Some(
                 CheckoutBuilder::new()
