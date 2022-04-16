@@ -20,4 +20,6 @@ chrono = "0.4"
 surf = "2.3"
 git2 = "0.14"
 backoff = { version = "0.4", features = ["futures", "async-std"] }
-rhai = "1.6"
+rhai = { version =  "1.6", features = ["sync"] }
+anyhow = "1.0"
+shell-words = "1.1"

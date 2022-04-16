@@ -141,22 +141,17 @@ async fn main() -> tide::Result<()> {
         async fn run<P: AsRef<std::path::Path> + AsRef<std::ffi::OsStr>>(
             repos_root: P,
             job: Job,
-        ) -> Result<(), String> {
-            job.checkout(&repos_root)
-                .map_err(|e| format!("{}", e))?
-                .run()
-                .map_err(|e| format!("{}", e))?;
+        ) -> anyhow::Result<()> {
+            job.checkout(&repos_root)?
+                .prepare_script()?
+                .run()?;
             Ok(())
         }
 
-        async fn get_job<D: std::fmt::Display>(url: D) -> Result<Job, String> {
+        async fn get_job<D: std::fmt::Display>(url: D) -> anyhow::Result<Job> {
             let mut res = surf::post(format!("{}/queue/remove?long_poll=true", url))
-                .await
-                .map_err(|e| format!("{}", e))?;
-            match res.body_json::<Job>().await {
-                Ok(job) => Ok(job),
-                Err(e) => Err(format!("{}", e)),
-            }
+                .await.map_err(|e| e.into_inner())?;
+            res.body_json::<Job>().await.map_err(|e| e.into_inner())
         }
 
         loop {
