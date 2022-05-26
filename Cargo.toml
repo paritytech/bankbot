@@ -23,3 +23,6 @@ backoff = { version = "0.4", features = ["futures", "async-std"] }
 rhai = { version =  "1.6", features = ["sync"] }
 anyhow = "1.0"
 shell-words = "1.1"
+jsonwebtoken = "7.2"
+url = "2.2"
+tokio = { version = "1.17", features = ["rt", "rt-multi-thread"] }

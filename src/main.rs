@@ -1,17 +1,27 @@
-use bankbot::{Job, LocalQueue, Queue};
+use bankbot::{Job, LocalQueue, Queue, job::Repository};
+use async_std::sync::{Arc, RwLock, Mutex};
 use std::convert::TryInto;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use structopt::StructOpt;
 use tide::prelude::*;
 use tide_github::Event;
+use octocrab::Octocrab;
+use octocrab::params::apps::CreateInstallationAccessToken;
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "bankbot", about = "The benchmarking bot")]
+#[structopt(name = "bankbot", about = "The benchmarking bot\n\nSee the [Github docs][1] for instructions on setting up a Github app (and thus acquiring the required Github credentials).
+
+[1]: https://docs.github.com/en/developers/apps/building-github-apps/creating-a-github-app")]
 struct Config {
     /// Github Webhook secret
     #[structopt(short, long, env, hide_env_values = true)]
     webhook_secret: String,
+    /// Github App ID
+    #[structopt(long, env)]
+    app_id: u64,
+    /// Github App key
+    #[structopt(long, env, hide_env_values = true)]
+    app_key: String,
     /// Port to listen on
     #[structopt(short, long, env, default_value = "3000")]
     port: u16,
@@ -43,13 +53,7 @@ async fn remove_from_queue(req: tide::Request<State>) -> tide::Result {
     let recv = {
         let queue = req.state();
 
-        let mut queue = match queue.lock() {
-            Ok(queue) => queue,
-            Err(e) => {
-                log::warn!("Failed to access queue mutex: {}", e);
-                return Ok(tide::Response::builder(500).build());
-            }
-        };
+        let mut queue = queue.lock().await;
 
         match queue.remove() {
             Some(job) => return Ok(tide::Body::from_json(&job)?.into()),
@@ -113,21 +117,23 @@ async fn main() -> tide::Result<()> {
                         chrono::Utc::now().timestamp_nanos()
                     );
 
+                    let repo: Repository = match payload.repository.try_into() {
+                        Ok(repo) => repo,
+                        Err(err) => {
+                            log::warn!("Failed to parse repository payload: {}", err);
+                            return;
+                        }
+                    };
+
                     let job = Job {
                         command,
                         user: payload.comment.user,
-                        repository: payload.repository,
+                        repository: repo,
                         issue: payload.issue,
                     };
 
-                    match queue.lock() {
-                        Ok(mut queue) => {
-                            queue.add(id, job);
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to queue job: {}", e)
-                        }
-                    }
+                    let q = queue.clone();
+                    async_std::task::spawn (async move { q.lock().await.add(id, job); });
                 }
             }
         })
@@ -137,23 +143,37 @@ async fn main() -> tide::Result<()> {
 
     let self_url = format!("http://{}:{}", config.address, config.port);
     let repos_root = config.repos_root.clone();
+    let octocrab = {
+        let token = {
+            let app_id = octocrab::models::AppId::from(config.app_id);
+            let app_key = jsonwebtoken::EncodingKey::from_rsa_pem(config.app_key.as_bytes())?;
+            octocrab::auth::create_jwt(app_id, &app_key)?
+        };
+        Octocrab::builder().personal_token(token).build()?
+    };
+
+    let tokio_rt = tokio::runtime::Runtime::new()?;
+
+    let rt_handle = tokio_rt.handle();
     async_std::task::spawn(async move {
         async fn run<P: AsRef<std::path::Path> + AsRef<std::ffi::OsStr>>(
             repos_root: P,
             job: Job,
+            github_client: Arc<RwLock<octocrab::Octocrab>>,
         ) -> anyhow::Result<()> {
-            job.checkout(&repos_root)?
-                .prepare_script()?
-                .run()?;
+            job.checkout(&repos_root)?.prepare_script(github_client)?.run()?;
             Ok(())
         }
 
         async fn get_job<D: std::fmt::Display>(url: D) -> anyhow::Result<Job> {
             let mut res = surf::post(format!("{}/queue/remove?long_poll=true", url))
-                .await.map_err(|e| e.into_inner())?;
+                .await
+                .map_err(|e| e.into_inner())?;
             res.body_json::<Job>().await.map_err(|e| e.into_inner())
         }
 
+        let github_client = Arc::new(RwLock::new(octocrab));
+        let rt_handle = tokio_rt.handle();
         loop {
             match get_job(&self_url).await {
                 Ok(job) => {
@@ -163,10 +183,43 @@ async fn main() -> tide::Result<()> {
                         job.user.login,
                         job.repository.url
                     );
-                    if let Err(e) = run(&repos_root, job).await {
-                        log::warn!("Error running job: {}", e);
+
+                    // TODO: Fix block_on
+                    let octo_client = match rt_handle.block_on(async {
+                        let github_client = github_client.read().await;
+                        let installations = github_client.apps().installations().send().await.unwrap().take_items();
+                        let mut access_token_req = CreateInstallationAccessToken::default();
+                        access_token_req.repository_ids = vec!(job.repository.id);
+                        println!("installations: {:?}", installations);
+                        let access: octocrab::models::InstallationToken = github_client.post(installations[0].access_tokens_url.as_ref().unwrap(), Some(&access_token_req)).await?;
+                        octocrab::OctocrabBuilder::new().personal_token(access.token).build()
+                    }) {
+                        Ok(octo_client) => octo_client,
+                        _ => { log::warn!("Failed to require octocrab Github client"); return },
                     };
-                }
+
+                    let octo_client = Arc::new(RwLock::new(octo_client));
+
+                    let repo_owner = job.repository.owner.login.clone();
+                    let repo_name = job.repository.name.clone();
+                    let issue_nr = job.issue.number.try_into();
+
+                    if let Err(job_err) = run(&repos_root, job, octo_client.clone()).await {
+                        log::warn!("Error running job: {job_err}");
+
+                        if let Ok(issue_nr) = issue_nr {
+                            let bla = match rt_handle.block_on(async {
+                                octo_client.read().await
+                                    .issues(&repo_owner, &repo_name)
+                                    .create_comment(issue_nr, format!("Error running job: {job_err}")).await
+                            }) {
+                                Ok(_) => {},
+                                Err(err) => log::warn!("Failed to comment on issue: {err}"),
+                            };
+                            ()
+                        };
+                    };
+                },
                 Err(e) => log::warn!("Failed to retrieve job from queue: {}", e),
             }
         }

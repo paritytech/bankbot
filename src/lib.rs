@@ -1,4 +1,4 @@
-mod job;
+pub mod job;
 mod local_queue;
 
 pub use job::Job;
