@@ -1,5 +1,5 @@
 use bankbot::{Job, LocalQueue, Queue, job::Repository};
-use async_std::sync::{Arc, RwLock, Mutex};
+use async_std::sync::{Arc, Mutex};
 use std::convert::TryInto;
 use std::path::PathBuf;
 use structopt::StructOpt;
@@ -143,7 +143,7 @@ async fn main() -> tide::Result<()> {
 
     let self_url = format!("http://{}:{}", config.address, config.port);
     let repos_root = config.repos_root.clone();
-    let octocrab = {
+    let github_client = {
         let token = {
             let app_id = octocrab::models::AppId::from(config.app_id);
             let app_key = jsonwebtoken::EncodingKey::from_rsa_pem(config.app_key.as_bytes())?;
@@ -152,16 +152,18 @@ async fn main() -> tide::Result<()> {
         Octocrab::builder().personal_token(token).build()?
     };
 
-    let tokio_rt = tokio::runtime::Runtime::new()?;
 
-    let rt_handle = tokio_rt.handle();
+    let tokio_rt = tokio::runtime::Runtime::new()?;
     async_std::task::spawn(async move {
         async fn run<P: AsRef<std::path::Path> + AsRef<std::ffi::OsStr>>(
             repos_root: P,
             job: Job,
-            github_client: Arc<RwLock<octocrab::Octocrab>>,
+            github_client: octocrab::Octocrab,
+            tokio_handle: tokio::runtime::Handle,
         ) -> anyhow::Result<()> {
-            job.checkout(&repos_root)?.prepare_script(github_client)?.run()?;
+            //let github = Arc::try_unwrap(github_client).into_inner();
+            //let github = std::sync::Arc::new(std::sync::Mutex::new(github));
+            job.checkout(&repos_root)?.prepare_script(github_client, tokio_handle)?.run()?;
             Ok(())
         }
 
@@ -172,11 +174,11 @@ async fn main() -> tide::Result<()> {
             res.body_json::<Job>().await.map_err(|e| e.into_inner())
         }
 
-        let github_client = Arc::new(RwLock::new(octocrab));
         let rt_handle = tokio_rt.handle();
         loop {
+            let github_client = github_client.clone();
             match get_job(&self_url).await {
-                Ok(job) => {
+                Ok(ref job) => {
                     log::info!(
                         "Processing command {} by user {} from repo {}",
                         job.command,
@@ -185,38 +187,39 @@ async fn main() -> tide::Result<()> {
                     );
 
                     // TODO: Fix block_on
-                    let octo_client = match rt_handle.block_on(async {
-                        let github_client = github_client.read().await;
-                        let installations = github_client.apps().installations().send().await.unwrap().take_items();
+                    let gh_client = github_client.clone();
+                    let github_installation_client = match rt_handle.block_on(async move {
+                        let installations = gh_client.apps().installations().send().await.unwrap().take_items();
                         let mut access_token_req = CreateInstallationAccessToken::default();
                         access_token_req.repository_ids = vec!(job.repository.id);
-                        println!("installations: {:?}", installations);
-                        let access: octocrab::models::InstallationToken = github_client.post(installations[0].access_tokens_url.as_ref().unwrap(), Some(&access_token_req)).await?;
+                        // TODO: Properly fill-in installation
+                        let access: octocrab::models::InstallationToken = gh_client.post(installations[0].access_tokens_url.as_ref().unwrap(), Some(&access_token_req)).await?;
                         octocrab::OctocrabBuilder::new().personal_token(access.token).build()
                     }) {
-                        Ok(octo_client) => octo_client,
+                        Ok(github_installation_client) => github_installation_client,
                         _ => { log::warn!("Failed to require octocrab Github client"); return },
                     };
-
-                    let octo_client = Arc::new(RwLock::new(octo_client));
 
                     let repo_owner = job.repository.owner.login.clone();
                     let repo_name = job.repository.name.clone();
                     let issue_nr = job.issue.number.try_into();
 
-                    if let Err(job_err) = run(&repos_root, job, octo_client.clone()).await {
+                    let gh_client = github_client.clone();
+                    let job = job.clone();
+                    if let Err(job_err) = run(&repos_root, job, gh_client, rt_handle.clone()).await {
                         log::warn!("Error running job: {job_err}");
 
+                        // TODO: create separate tokio threadpool and send messages to
+                        // it
                         if let Ok(issue_nr) = issue_nr {
-                            let bla = match rt_handle.block_on(async {
-                                octo_client.read().await
+                            match rt_handle.block_on(async {
+                                github_installation_client
                                     .issues(&repo_owner, &repo_name)
                                     .create_comment(issue_nr, format!("Error running job: {job_err}")).await
                             }) {
                                 Ok(_) => {},
                                 Err(err) => log::warn!("Failed to comment on issue: {err}"),
                             };
-                            ()
                         };
                     };
                 },
