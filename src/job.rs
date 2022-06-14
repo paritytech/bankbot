@@ -65,8 +65,8 @@ impl std::convert::TryFrom<octocrab::models::Repository> for Repository {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Job {
-    pub command: String,
-    pub user: octocrab::models::User,
+    pub command: Vec<String>,
+    //pub user: octocrab::models::User,
     pub repository: Repository,
     pub issue: Issue,
 }
@@ -124,11 +124,12 @@ impl Job {
         )?;
 
         let job = CheckedoutJob {
-            job: self.clone(),
+            //job: self.clone(),
+            command: self.command.clone(),
             dir,
-            root: PathBuf::from(root),
-            repository: self.repository.clone(),
-            issue: self.issue.clone(),
+            clone_dir: PathBuf::from(root),
+            gh_repo: self.repository.clone(),
+            gh_issue: Some(self.issue.clone()),
         };
         Ok(job)
     }
@@ -142,7 +143,7 @@ impl Job {
             "{}_{}_{}_{}_{}",
             self.repository.id,
             self.issue.number,
-            self.user.login,
+            self.issue.user.login,
             &self.repository.owner.login,
             &self.repository.name
         );
@@ -151,12 +152,14 @@ impl Job {
     }
 }
 
+#[derive(Debug)]
 pub struct CheckedoutJob {
-    job: Job,
-    dir: PathBuf,
-    root: PathBuf,
-    repository: Repository,
-    issue: Issue,
+    //job: Job,
+    pub command: Vec<String>,
+    pub dir: PathBuf,
+    pub clone_dir: PathBuf,
+    pub gh_repo: Repository,
+    pub gh_issue: Option<Issue>,
 }
 
 impl CheckedoutJob {
@@ -230,9 +233,13 @@ impl CheckedoutJob {
             .register_result_fn("ls-modified", api::git::LocalRepo::list_modified)
             .register_result_fn("status", api::git::LocalRepo::pub_status)
             .register_result_fn("commit", api::git::LocalRepo::pub_commit::<String>)
-            .register_result_fn("push", api::git::LocalRepo::pub_push::<String>)
-            .register_result_fn("push", api::git::LocalRepo::pub_push::<&str>)
-            .register_result_fn("push", api::git::LocalRepo::pub_push::<rhai::ImmutableString>)
+            .register_result_fn("branch", api::git::LocalRepo::pub_branch::<String>)
+            .register_result_fn("branch", api::git::LocalRepo::pub_branch::<&str>)
+            .register_result_fn("branch", api::git::LocalRepo::pub_branch::<rhai::ImmutableString>)
+            .register_result_fn("push", api::git::LocalRepo::pub_push::<String, String>)
+            .register_result_fn("push", api::git::LocalRepo::pub_push::<&str, &str>)
+            .register_result_fn("push", api::git::LocalRepo::pub_push::<rhai::ImmutableString, rhai::ImmutableString>)
+            .register_result_fn("create_pr", api::git::LocalRepo::pub_create_pr)
             ;
 
         engine.register_type::<api::git::DirEntry>()
@@ -258,37 +265,13 @@ impl CheckedoutJob {
         Ok(engine)
     }
 
-    fn script_path(&self) -> Result<PathBuf, Error> {
-        let dir = self
-            .job
-            .command
-            .split(' ')
-            .next()
-            .map(|cmd| {
-                if let Some(cmd) = cmd.strip_prefix('/') {
-                    cmd
-                } else {
-                    cmd
-                }
-            })
-            .ok_or(Error::NoCmd)?;
-        let file = self
-            .job
-            .command
-            .split(' ')
-            .nth(1)
-            .map(|cmd| format!("{}.rhai", cmd))
-            .ok_or(Error::NoCmd)?;
-        Ok(Path::new(".github").join(dir).join(file))
-    }
-
     pub fn prepare_script(
         self,
         github_client: octocrab::Octocrab,
-        tokio_handle: tokio::runtime::Handle,
     ) -> Result<RunnableJob<'static>, Error> {
         log::debug!("Preparing script");
-        let script_path = self.script_path()?;
+        //let script_path = self.script_path()?;
+        let script_path = PathBuf::from(self.command.get(0).ok_or(Error::NoCmd)?);
 
         let engine = self.prepare_engine()?;
 
@@ -296,14 +279,18 @@ impl CheckedoutJob {
 
         let scope = {
             let mut scope = rhai::Scope::new();
-            let repo_name = self.repository.name.clone();
-            let issue = api::Issue::new(client.clone(), self.repository, self.issue);
-            scope.push_constant("issue", issue);
+            let repo_name = self.gh_repo.name.clone();
+            let repo_owner = self.gh_repo.owner.login.clone();
+            if let Some(gh_issue) = self.gh_issue {
+                let issue = api::Issue::new(client.clone(), self.gh_repo, gh_issue);
+                scope.push_constant("issue", issue);
+            }
+            log::debug!("local repo dir: {:?}", &self.dir);
             let local_repo = git2::Repository::open(&self.dir)?;
-            let repo = api::git::LocalRepo::new(&self.dir, repo_name, local_repo, client.clone(), tokio_handle.clone());
-            scope.push_constant("repo", repo);
+            let repo = api::git::LocalRepo::new(&self.dir, repo_owner, repo_name, local_repo, client.clone());
+            scope.push_constant("REPO", repo);
             // TODO: replace with proper module export
-            let git = api::git::Git{path: self.dir.clone(), root: self.root, github_client: client, tokio_handle};
+            let git = api::git::Git{path: self.dir.clone(), root: self.clone_dir, github_client: client};
             scope.push_constant("Git", git);
             Box::new(scope)
         };
@@ -334,9 +321,10 @@ impl RunnableJob<'_> {
         );
 
         // We don't want to leak any internal fs details
-        let ast = self.engine.compile_file(self.dir.join(self.script_path.clone()))
+        //let ast = self.engine.compile_file(self.dir.join(self.script_path.clone()))
+        let ast = self.engine.compile_file(self.script_path.clone())
             // Don't leak in the internal path
-            .map_err(|e| Error::ScriptExecution(format!("{e}").replace(&*self.dir.to_string_lossy(), ".").into()))
+            .map_err(|e| Error::ScriptExecution(format!("{e}").into()))
             ?;
 
         self.engine.run_ast_with_scope(&mut self.scope, &ast)?;

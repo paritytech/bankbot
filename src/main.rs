@@ -1,9 +1,10 @@
 use bankbot::{Job, LocalQueue, Queue, job::Repository};
 use async_std::sync::{Arc, Mutex};
 use std::convert::TryInto;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 use tide::prelude::*;
+use thiserror::Error;
 use tide_github::Event;
 use octocrab::Octocrab;
 use octocrab::params::apps::CreateInstallationAccessToken;
@@ -40,6 +41,12 @@ struct Config {
 }
 
 type State = Arc<Mutex<LocalQueue<String, Job>>>;
+
+#[derive(Error, Debug)]
+enum Error {
+    #[error("Missing bot command")]
+    NoCmd,
+}
 
 async fn remove_from_queue(req: tide::Request<State>) -> tide::Result {
     #[derive(Deserialize, Default)]
@@ -81,6 +88,31 @@ async fn remove_from_queue(req: tide::Request<State>) -> tide::Result {
     }
 }
 
+fn prepare_command(command: Vec<String>) -> Result<Vec<String>, Error> {
+    // The first argument (.e.g `/bot` is also the name of the directory the script is in
+    let dir = command
+        .iter()
+        .next()
+        .map(|cmd| {
+            if let Some(cmd) = cmd.strip_prefix('/') {
+                String::from(cmd)
+            } else {
+                String::from(cmd)
+            }
+        })
+        .ok_or(Error::NoCmd)?;
+    let file = command
+        .iter()
+        .nth(1)
+        .map(|cmd| format!("{}.rhai", cmd))
+        .ok_or(Error::NoCmd)?;
+    let mut args: Vec<String> = command.into_iter().skip(2).collect();
+    let script_path = String::from(Path::new(".github").join(dir).join(file).to_string_lossy());
+    let mut res = vec!(script_path);
+    res.append(&mut args);
+    Ok(res)
+}
+
 #[async_std::main]
 async fn main() -> tide::Result<()> {
     let config = Config::from_args();
@@ -108,12 +140,22 @@ async fn main() -> tide::Result<()> {
                     let command = body
                         .split_once('\n')
                         .map(|(cmd, _)| cmd.into())
-                        .unwrap_or(body);
+                        .map(|cmd| shell_words::split(cmd).expect("Failed to split command as shell words"))
+                        .unwrap_or_else(|| body.split(" ").map(|x| x.to_string()).collect())
+                        ;
+
+                    let command = match prepare_command(command) {
+                        Ok(command) => command,
+                        Err(e) => {
+                            log::warn!("Failed to determine command: {e}");
+                            return;
+                        },
+                    };
 
                     let id = format!(
                         "{}_{}_{}",
                         payload.repository.name,
-                        command,
+                        command.join(" "),
                         chrono::Utc::now().timestamp_nanos()
                     );
 
@@ -127,7 +169,7 @@ async fn main() -> tide::Result<()> {
 
                     let job = Job {
                         command,
-                        user: payload.comment.user,
+                        // user: payload.comment.user,
                         repository: repo,
                         issue: payload.issue,
                     };
@@ -159,11 +201,11 @@ async fn main() -> tide::Result<()> {
             repos_root: P,
             job: Job,
             github_client: octocrab::Octocrab,
-            tokio_handle: tokio::runtime::Handle,
+            //tokio_handle: tokio::runtime::Handle,
         ) -> anyhow::Result<()> {
             //let github = Arc::try_unwrap(github_client).into_inner();
             //let github = std::sync::Arc::new(std::sync::Mutex::new(github));
-            job.checkout(&repos_root)?.prepare_script(github_client, tokio_handle)?.run()?;
+            job.checkout(&repos_root)?.prepare_script(github_client)?.run()?;
             Ok(())
         }
 
@@ -180,10 +222,8 @@ async fn main() -> tide::Result<()> {
             match get_job(&self_url).await {
                 Ok(ref job) => {
                     log::info!(
-                        "Processing command {} by user {} from repo {}",
-                        job.command,
-                        job.user.login,
-                        job.repository.url
+                        "Processing command {} in repo {}",
+                        job.command.join(" "), job.repository.url
                     );
 
                     // TODO: Fix block_on
@@ -206,7 +246,8 @@ async fn main() -> tide::Result<()> {
 
                     let gh_client = github_client.clone();
                     let job = job.clone();
-                    if let Err(job_err) = run(&repos_root, job, gh_client, rt_handle.clone()).await {
+                    //if let Err(job_err) = run(&repos_root, job, gh_client, rt_handle.clone()).await {
+                    if let Err(job_err) = run(&repos_root, job, gh_client).await {
                         log::warn!("Error running job: {job_err}");
 
                         // TODO: create separate tokio threadpool and send messages to

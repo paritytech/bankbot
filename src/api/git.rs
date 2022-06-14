@@ -1,4 +1,5 @@
 use thiserror::Error;
+use std::sync::mpsc::channel;
 use std::path::{Path, PathBuf};
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use std::sync::{Arc, Mutex};
@@ -26,7 +27,18 @@ pub enum Error {
     #[error("Unexpected status entry encountered for path {0}")]
     UnexpectedStatusEntry(PathBuf),
     #[error("Failed to retrieve Github access token: {0}")]
-    NoAccessToken(String)
+    NoAccessToken(String),
+    #[error("Failed to receive access token through channel: {source}")]
+    ChannelRecvFailure{
+        #[from]
+        source: std::sync::mpsc::RecvError,
+    },
+    #[error("Error talking to Github: {source}")]   GithubApiError {
+        #[from]
+        source: octocrab::Error,
+    },
+    #[error("Given name is not a valid Github repo name (`owner/repo`)")]
+    InvalidGithubRepoName,
 }
 
 impl From<std::sync::PoisonError<std::sync::MutexGuard<'_, git2::Repository>>> for Error {
@@ -34,14 +46,6 @@ impl From<std::sync::PoisonError<std::sync::MutexGuard<'_, git2::Repository>>> f
         Self::ExclusiveLock
     }
 }
-
-/*
-impl Into<Box<rhai::EvalAltResult>> for Error {
-    fn into(self) -> Box<rhai::EvalAltResult> {
-        format!("{self}").into()
-    }
-}
-*/
 
 #[derive(Clone, Debug)]
 pub struct Git {
@@ -51,14 +55,17 @@ pub struct Git {
     /// Root containing the repositories
     pub(crate) root: std::path::PathBuf,
     pub(crate) github_client: Arc<Mutex<octocrab::Octocrab>>,
-    pub(crate) tokio_handle: tokio::runtime::Handle,
+    //pub(crate) tokio_handle: tokio::runtime::Handle,
 }
 
 impl Git {
     // To make the common case both easy and efficient this function both clones and
     // fetches/checksout a ref.
-    pub fn clone<S: AsRef<str>>(&mut self, repo_name: String, head: S) -> Result<LocalRepo, Box<rhai::EvalAltResult>> {
-        let url = format!("https://github.com/{}", repo_name);
+    pub fn clone<S: AsRef<str>>(&mut self, repo: String, head: S) -> Result<LocalRepo, Box<rhai::EvalAltResult>> {
+        let url = format!("https://github.com/{}", repo);
+        let (repo_owner, repo_name) = repo.split_at(repo.find('/').ok_or(format!("Invalid Github Repository name (`owner/repo`)"))?);
+        let mut repo_name = String::from(repo_name);
+        repo_name.remove(0); // Remove the '/'
         let dir = self.repo_dir(&url);
         let repo = match std::fs::metadata(&dir) {
             Ok(metadata) if metadata.is_dir() => git2::Repository::open(&dir).map_err(|e| format!("{e}"))?,
@@ -77,20 +84,21 @@ impl Git {
                 return Err(Box::new(err.into()));
             }
         };
-        let repo = LocalRepo::with_repo(dir, repo_name, head.as_ref(), repo, self.github_client.clone(), self.tokio_handle.clone())?;
+        let repo = LocalRepo::with_repo(dir, repo_owner, repo_name, head.as_ref(), repo, self.github_client.clone())?;
         log::info!("Constructed local repo {:?}", repo.dir);
         Ok(repo)
     }
 
     fn repo_dir<U: std::fmt::Display>(&self, url: U) -> PathBuf {
-        let mut full_path = PathBuf::from(&self.root);
-        let url = format!("{url}").replace('/', "");
+        log::info!("repos_root: {:?}", &self.root);
+        let full_path = PathBuf::from(&self.root);
+        let url = format!("{url}").replace('/', "_");
         let dir_name = format!(
-            "{}__{}",
-            self.path.to_string_lossy(),
+            "{}",
             &url,
         );
-        full_path.set_file_name(dir_name);
+        let full_path = full_path.join(dir_name);
+        log::debug!("full_path: {:?}", full_path);
         full_path
     }
 }
@@ -101,8 +109,9 @@ pub struct LocalRepo {
     repo: Arc<Mutex<git2::Repository>>,
     config: Option<Config>,
     github_client: Arc<Mutex<octocrab::Octocrab>>,
+    github_owner: String,
     github_name: String,
-    tokio_handle: tokio::runtime::Handle,
+    //tokio_handle: tokio::runtime::Handle,
 }
 
 impl std::fmt::Display for LocalRepo {
@@ -118,29 +127,65 @@ struct Config {
 }
 
 impl LocalRepo {
-    pub(crate) fn new<P: AsRef<Path>, N: AsRef<str>>(dir: P, repo_name: N, repo: git2::Repository, github: Arc<Mutex<octocrab::Octocrab>>, tokio_handle: tokio::runtime::Handle) -> LocalRepo {
+    //pub(crate) fn new<P: AsRef<Path>, N: AsRef<str>>(dir: P, repo_name: N, repo: git2::Repository, github: Arc<Mutex<octocrab::Octocrab>>, tokio_handle: tokio::runtime::Handle) -> LocalRepo {
+    pub(crate) fn new<P: AsRef<Path>, O: AsRef<str>, N: AsRef<str>>(dir: P, repo_owner: O, repo_name: N, repo: git2::Repository, github: Arc<Mutex<octocrab::Octocrab>>) -> LocalRepo {
         LocalRepo {
             dir: PathBuf::from(dir.as_ref()),
             repo: Arc::new(Mutex::new(repo)),
             config: None,
+            github_owner: String::from(repo_owner.as_ref()),
             github_name: String::from(repo_name.as_ref()),
             github_client: github,
-            tokio_handle,
+            //tokio_handle,
         }
     }
 
-    fn with_repo<P: AsRef<Path>, S: AsRef<str>, R: AsRef<str>>(dir: P, repo_name: R, head: S, repo: git2::Repository, github_client: Arc<Mutex<octocrab::Octocrab>>, tokio_handle: tokio::runtime::Handle) -> Result<LocalRepo, Box<rhai::EvalAltResult>>
+    //fn with_repo<P: AsRef<Path>, S: AsRef<str>, R: AsRef<str>>(dir: P, repo_name: R, head: S, repo: git2::Repository, github_client: Arc<Mutex<octocrab::Octocrab>>, tokio_handle: tokio::runtime::Handle) -> Result<LocalRepo, Box<rhai::EvalAltResult>>
+    fn with_repo<P: AsRef<Path>, S: AsRef<str>, O: AsRef<str>, N: AsRef<str>>(dir: P, repo_owner: O, repo_name: N, head: S, repo: git2::Repository, github_client: Arc<Mutex<octocrab::Octocrab>>) -> Result<LocalRepo, Box<rhai::EvalAltResult>>
     {
         let mut s = LocalRepo {
             dir: PathBuf::from(dir.as_ref()),
             repo: Arc::new(Mutex::new(repo)),
             config: None,
             github_client,
+            github_owner: String::from(repo_owner.as_ref()),
             github_name: String::from(repo_name.as_ref()),
-            tokio_handle,
+            //tokio_handle,
         };
         s.checkout_remote_head(head.as_ref()).map_err(|e| format!("{e}"))?;
         Ok(s)
+    }
+
+    // TODO: Return some kind of PR object
+    fn create_pr(&self, title: impl Into<String>, body: impl Into<String>, head: impl Into<String>, base: impl Into<String>) -> Result<(), Error> {
+        /*
+        let pr = async_global_executor::spawn(async {
+            self.github_client.lock()?
+                .pulls(&self.github_owner, &self.github_name)
+                .create(title, head, base)
+                .body(body)
+                .send()
+        });
+        async_global_executor::block_on(async { pr.await });
+        */
+        let token = self.get_access_token()?;
+        let gh_client = octocrab::OctocrabBuilder::new().personal_token(token).build()?;
+        println!("name: {}", self.github_name);
+        futures_lite::future::block_on(async {
+            let owner = self.github_owner.clone();
+            let name = self.github_name.clone();
+            gh_client
+                .pulls(owner, name)
+                .create(title, head, base)
+                .body(body)
+                .send()
+                .await
+        });
+        Ok(())
+    }
+
+    pub fn pub_create_pr(&mut self, title: String, body: String, head: String, base: String) -> Result<(), Box<rhai::EvalAltResult>> {
+        self.create_pr(title, body, head, base).map_err(|e| format!("{e}").into())
     }
 
     // fetch and checkout/reset remote head (branch)
@@ -156,7 +201,6 @@ impl LocalRepo {
             None,
         )?;
 
-        //let repo = self.repo.lock()?;
         let rev = repo.revparse_single(head)?;
         repo.reset(
             &rev,
@@ -219,8 +263,17 @@ impl LocalRepo {
     //pub fn write_file<P: AsRef<Path>, B: AsRef<[u8]>>(&mut self, path: P, contents: B) -> Result<(), Box<rhai::EvalAltResult>> {
     pub fn write_file<P: AsRef<Path>>(&mut self, path: P, contents: rhai::Blob) -> Result<(), Box<rhai::EvalAltResult>> {
         let path = path.as_ref();
+        if path.components().collect::<Vec<_>>().contains(&std::path::Component::ParentDir) {
+            return Err(format!("no `../` allowed in path names").into());
+        }
+        /*
+        if path.components().map(|p| p.as_path()).collect::<Vec<Path>>().contains(PathBuf::from("../")) {
+            return Err(format!("no `../` allowed in path names").into());
+        }
+        */
         log::debug!("Writing file (before normalization): {:?}", path);
-        let path = self.get_full_path(path)?;
+        let path = self.dir.join(&path);
+        //let path = self.get_full_path(path)?;
         log::debug!("Writing file {:?}", path);
         // TODO: Make sure directory exists
         Ok(std::fs::write(path, contents).map_err(|e| format!("{e}"))?)
@@ -266,13 +319,11 @@ impl LocalRepo {
 
     pub fn add<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<rhai::EvalAltResult>> {
         let path = path.as_ref();
-        //log::debug!("adding path (in dir {:?}) (before normalization): {:?}", self.dir, path);
-        //let path = self.normalize_path(path).map_err(|e| format!("{e}"))?;
-        //let path = self.get_full_path(path)?;
-        log::debug!("adding path (after normalization): {:?}", path);
+        log::debug!("Adding file {:?}", path);
         let repo = self.repo.lock().map_err(|e| format!("{e}"))?;
         let mut index = repo.index().map_err(|e| format!("{e}"))?;
-        index.add_path(path).map_err(|e| format!("{e}").into())
+        index.add_path(path).map_err(|e| format!("{e}"))?;
+        Ok(())
     }
 
     pub fn add_list<'a, I: IntoIterator<Item = &'a Path>>(&mut self, paths: I) -> Result<(), Box<rhai::EvalAltResult>> {
@@ -297,7 +348,9 @@ impl LocalRepo {
         };
         let rev = repo.revparse_single("HEAD")?;
         let commit = rev.peel_to_commit()?;
-        let tree = commit.tree()?;
+        let mut index = repo.index()?;
+        let oid = index.write_tree()?;
+        let tree = repo.find_tree(oid)?;
         repo.commit(Some("HEAD"), &signature, &signature, message.as_ref(), &tree, &[&commit])?;
         Ok(())
     }
@@ -315,22 +368,45 @@ impl LocalRepo {
         Ok(list)
     }
 
-    fn push<R: AsRef<str>>(&mut self, gitref: R) -> Result<(), Error> {
-        log::debug!("pushing!");
-        let repo = self.repo.lock()?;
-        let mut remote = repo.find_remote("origin")?;
-        let github_client = self.github_client.lock().map_err(|_| Error::ExclusiveLock)?;
-        // TODO: Fix block_on
-        let access_token_res: Result<String, Error> = self.tokio_handle.block_on(async {
-            log::debug!("Getting installations...");
-            let installations = github_client.apps().installations().send().await.unwrap().take_items();
-            log::debug!("Got some installations!");
+    fn get_access_token(&self) -> Result<String, Error> {
+        let github_client = self.github_client.clone();
+        futures_lite::future::block_on(async {
+            let github_client = github_client.lock().map_err(|_| Error::ExclusiveLock)?;
+            let installations = github_client.apps().installations().send().await?.take_items();
             let mut access_token_req = octocrab::params::apps::CreateInstallationAccessToken::default();
             access_token_req.repositories = vec!();
             // TODO: Properly fill-in installation
+            log::info!("still doing stuff");
             let access: octocrab::models::InstallationToken = github_client.post(installations[0].access_tokens_url.as_ref().unwrap(), Some(&access_token_req)).await.map_err(|e| Error::NoAccessToken(format!("{e}")))?;
             Ok(access.token)
+        })
+    }
+
+    fn push<L: AsRef<str>, R: AsRef<str>>(&mut self, localref: L, remoteref: R) -> Result<(), Error> {
+        log::debug!("pushing!");
+        let repo = self.repo.lock()?;
+        let mut remote = repo.find_remote("origin")?;
+        //let github_client = self.github_client.lock().map_err(|_| Error::ExclusiveLock)?.clone();
+        let github_client = self.github_client.clone();
+        // TODO: Fix block_on
+        //let access_token_res: Result<String, Error> = self.tokio_handle.block_on(async {
+        let (tx, rx) = channel();
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let res: Result<String, Error> = handle.block_on(async {
+                let github_client = github_client.lock().map_err(|_| Error::ExclusiveLock)?;
+                let installations = github_client.apps().installations().send().await?.take_items();
+                let mut access_token_req = octocrab::params::apps::CreateInstallationAccessToken::default();
+                access_token_req.repositories = vec!();
+                // TODO: Properly fill-in installation
+                log::info!("still doing stuff");
+                let access: octocrab::models::InstallationToken = github_client.post(installations[0].access_tokens_url.as_ref().unwrap(), Some(&access_token_req)).await.map_err(|e| Error::NoAccessToken(format!("{e}")))?;
+                Ok(access.token)
+            });
+            tx.send(res).unwrap_or_else(|e| log::warn!("Failed to send access token through channel: {e}"));
         });
+
+        let access_token_res: Result<String, Error> = rx.recv()?;
         let access_token = access_token_res?;
         log::debug!("Got an access token!");
         let mut callbacks = git2::RemoteCallbacks::new();
@@ -342,7 +418,8 @@ impl LocalRepo {
         log::debug!("push options including creds callback ready!");
         // TODO: Check if this error handling is sufficient
         //Ok(remote.push::<String>(&[String::from(gitref.as_ref())], Some(&mut push_options))?)
-        if let Err(err) = remote.push::<String>(&[format!("refs/heads/{}", gitref.as_ref())], Some(&mut push_options)) {
+        //if let Err(err) = remote.push::<String>(&[format!("refs/heads/{}", localref.as_ref()), format!("refs/remotes/origin/{}", remoteref.as_ref())], Some(&mut push_options)) {
+        if let Err(err) = remote.push::<String>(&[format!("refs/heads/{}", localref.as_ref())], Some(&mut push_options)) {
             log::debug!("Failed to push: {err}");
             Err(err)?
         } else {
@@ -350,8 +427,19 @@ impl LocalRepo {
         }
     }
 
-    pub fn pub_push<R: AsRef<str>>(&mut self, gitref: R) -> Result<(), Box<rhai::EvalAltResult>> {
-        self.push(gitref).map_err(|e| format!("{e}").into())
+    fn branch<B: AsRef<str>>(&mut self, branch: B) -> Result<(), Error> {
+        let repo = self.repo.lock()?;
+        let head = repo.revparse_single("HEAD")?.peel_to_commit()?;
+        repo.branch(branch.as_ref(), &head, true);
+        Ok(())
+    }
+
+    pub fn pub_branch<B: AsRef<str>>(&mut self, branch: B) -> Result<(), Box<rhai::EvalAltResult>> {
+        self.branch(branch).map_err(|e| format!("{e}").into())
+    }
+
+    pub fn pub_push<L: AsRef<str>, R: AsRef<str>>(&mut self, localref: L, remoteref: R) -> Result<(), Box<rhai::EvalAltResult>> {
+        self.push(localref, remoteref).map_err(|e| format!("{e}").into())
     }
 
     fn status(&self) -> Result<Status, Error> {

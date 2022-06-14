@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Koen Wilde <koen@parity.io>"]
 edition = "2018"
 license = "Apache-2.0"
+default-run = "bbot-run"
 
 [dependencies]
 tide = "0.16"
@@ -25,4 +26,10 @@ anyhow = "1.0"
 shell-words = "1.1"
 jsonwebtoken = "7.2"
 url = "2.2"
-tokio = { version = "1.17", features = ["rt", "rt-multi-thread"] }
+tokio = { version = "1.17", features = ["rt", "rt-multi-thread", "macros"] }
+async-global-executor = { version = "2.1", features = ["async-io", "tokio"] }
+futures-lite = "1.12"
+
+[[bin]]
+name = "bbot-run"
+src = "src/bbot-run.rs"
