@@ -29,14 +29,14 @@ More documentation will be coming soon.
 
 ### Hello, world
 
-```rhai
-// Clone a repo, say hello, and issue a PR for it
+```rust
+//! Clone a repo, say hello, and issue a PR for it
+
 let message = `
 # Hello
 
 As you can see, backticks allow multiline strings.
 `;
-
 let repo = github::clone("koenw/ci-script", "master");
 repo.branch("bla");
 repo.write("hello.md", message);
@@ -47,13 +47,13 @@ repo.create_pr("Say Hello", "Please just let me say hello, but in more words", "
 
 ### Custom Repository Sync
 
-```rhai
-// Sync a subdirtory of our repository to (the root of) another repository
+```rust
+//! Sync a subdirtory of our repository to (the root of) another repository
 
 let target_repo = github::clone("koenw/substrate-node-template", "main");
 
-// `REPO` is a global variable that contains the repository that triggered our script (if
-applicable)
+// `REPO` is a global variable that contains the repository that triggered our script
+// (if applicable)
 for f in REPO.ls-files("bin/node-template-update")
   .map(|entry| entry.path) {
     let new_path = f.strip_prefix("bin/node-template");
@@ -61,9 +61,9 @@ for f in REPO.ls-files("bin/node-template-update")
 }
 ```
 
-### Automatic Rust FMT PR's
+### Automatic `cargo fmt` PR's
 
-```rhai
+```rust
 REPO.branch("auto-fmt");
 
 cargo "fmt"
@@ -159,5 +159,9 @@ OPTIONS:
 You need a recent version of Rust, at least 1.56. I personally use the equivalent of
 `nix-shell -p rustup gcc pkg-config openssl` with the latest stable rust.
 
-`cargo build --release ci-script`
-`cargo build --release cis-gh-reactor`
+```sh
+# To build the (command line) interpreter
+cargo build --release ci-script
+# To build the GitHub Webhook Reactor
+cargo build --release cis-gh-reactor
+```
