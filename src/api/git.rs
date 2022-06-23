@@ -51,6 +51,7 @@ impl From<std::sync::PoisonError<std::sync::MutexGuard<'_, git2::Repository>>> f
 pub struct Git {
     /// Path to the repository owning the script
     // TODO: Crate initializer so these don't need `pub`
+    #[allow(unused)]
     pub(crate) path: std::path::PathBuf,
     /// Root containing the repositories
     pub(crate) root: std::path::PathBuf,
@@ -180,7 +181,7 @@ impl LocalRepo {
                 .body(body)
                 .send()
                 .await
-        });
+        })?;
         Ok(())
     }
 
@@ -382,7 +383,7 @@ impl LocalRepo {
         })
     }
 
-    fn push<L: AsRef<str>, R: AsRef<str>>(&mut self, localref: L, remoteref: R) -> Result<(), Error> {
+    fn push<L: AsRef<str>, R: AsRef<str>>(&mut self, localref: L, _remoteref: R) -> Result<(), Error> {
         log::debug!("pushing!");
         let repo = self.repo.lock()?;
         let mut remote = repo.find_remote("origin")?;
@@ -430,7 +431,7 @@ impl LocalRepo {
     fn branch<B: AsRef<str>>(&mut self, branch: B) -> Result<(), Error> {
         let repo = self.repo.lock()?;
         let head = repo.revparse_single("HEAD")?.peel_to_commit()?;
-        repo.branch(branch.as_ref(), &head, true);
+        repo.branch(branch.as_ref(), &head, true)?;
         Ok(())
     }
 
@@ -476,6 +477,7 @@ impl TryFrom<git2::StatusEntry<'_>> for StatusEntry {
 
 #[derive(Clone)]
 pub struct Status {
+    #[allow(unused)]
     repo: Arc<Mutex<git2::Repository>>,
     statuses: Vec<StatusEntry>,
 }
