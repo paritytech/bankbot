@@ -5,7 +5,7 @@ use octocrab::Octocrab;
 use std::convert::TryInto;
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "bbot-run", about = "Run bbot scripts from the command line, like from a CI/CD job")]
+#[structopt(name = "ci-scripts", about = "Run CI scripts, like from a CI/CD job")]
 struct Opt {
     /// Path to the repository
     #[structopt(long, env, default_value = "./")]
@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
         x
     };
     let dir = std::fs::canonicalize(&opt.repo)?;
-    let job = bankbot::job::CheckedoutJob {
+    let job = ci_script::job::CheckedoutJob {
         command,
         dir,
         clone_dir: opt.clone_dir,
@@ -91,6 +91,6 @@ async fn get_github_repo_client<O: AsRef<str>, N: AsRef<str>>(gh_client: &octocr
     Ok(octocrab::OctocrabBuilder::new().personal_token(access.token).build()?)
 }
 
-async fn get_github_repo<O: AsRef<str>, N: AsRef<str>>(gh_client: &octocrab::Octocrab, owner: O, name: N) -> Result<bankbot::job::Repository> {
+async fn get_github_repo<O: AsRef<str>, N: AsRef<str>>(gh_client: &octocrab::Octocrab, owner: O, name: N) -> Result<ci_script::job::Repository> {
     Ok(gh_client.repos(owner.as_ref(), name.as_ref()).get().await?.try_into()?)
 }

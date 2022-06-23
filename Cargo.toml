@@ -1,10 +1,10 @@
 [package]
-name = "bankbot"
+name = "ci-script"
 version = "0.1.0"
 authors = ["Koen Wilde <koen@parity.io>"]
 edition = "2018"
 license = "Apache-2.0"
-default-run = "bbot-run"
+default-run = "cis"
 
 [dependencies]
 tide = "0.16"
@@ -31,5 +31,9 @@ async-global-executor = { version = "2.1", features = ["async-io", "tokio"] }
 futures-lite = "1.12"
 
 [[bin]]
-name = "bbot-run"
-src = "src/bbot-run.rs"
+name = "cis"
+path = "src/bin/ci-script.rs"
+
+[[bin]]
+name = "cis-gh-reactor"
+path = "src/bin/gh-webhook-reactor.rs"

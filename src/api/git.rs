@@ -344,7 +344,7 @@ impl LocalRepo {
         let repo = self.repo.lock()?;
         let signature = match &self.config {
             Some(Config{name, email}) => git2::Signature::now(name, email)?,
-            None => git2::Signature::now("bankbot (TODO: Changeme)", "changeme@parity.io")?,
+            None => git2::Signature::now("ci-script (TODO: Changeme)", "changeme@parity.io")?,
         };
         let rev = repo.revparse_single("HEAD")?;
         let commit = rev.peel_to_commit()?;

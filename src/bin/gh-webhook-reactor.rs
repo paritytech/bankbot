@@ -1,4 +1,4 @@
-use bankbot::{Job, LocalQueue, Queue, job::Repository};
+use ci_script::{Job, LocalQueue, Queue, job::Repository};
 use async_std::sync::{Arc, Mutex};
 use std::convert::TryInto;
 use std::path::{Path, PathBuf};
@@ -10,9 +10,7 @@ use octocrab::Octocrab;
 use octocrab::params::apps::CreateInstallationAccessToken;
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "bankbot", about = "The benchmarking bot\n\nSee the [Github docs][1] for instructions on setting up a Github app (and thus acquiring the required Github credentials).
-
-[1]: https://docs.github.com/en/developers/apps/building-github-apps/creating-a-github-app")]
+#[structopt(name = "ci-script", about = "Simply automate your CI needs with the powers of the CI Scripting Language")]
 struct Config {
     /// Github Webhook secret
     #[structopt(short, long, env, hide_env_values = true)]
