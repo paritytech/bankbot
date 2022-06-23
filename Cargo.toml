@@ -17,7 +17,6 @@ log = "0.4"
 pretty_env_logger = "0.4"
 structopt = "0.3"
 indexmap = "1.8"
-chrono = "0.4"
 surf = "2.3"
 git2 = "0.14"
 backoff = { version = "0.4", features = ["futures", "async-std"] }
@@ -29,6 +28,7 @@ url = "2.2"
 tokio = { version = "1.17", features = ["rt", "rt-multi-thread", "macros"] }
 async-global-executor = { version = "2.1", features = ["async-io", "tokio"] }
 futures-lite = "1.12"
+uuid = { version = "1.1", features = ["v4"] }
 
 [[bin]]
 name = "cis"

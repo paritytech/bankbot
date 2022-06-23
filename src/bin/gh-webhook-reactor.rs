@@ -154,7 +154,7 @@ async fn main() -> tide::Result<()> {
                         "{}_{}_{}",
                         payload.repository.name,
                         command.join(" "),
-                        chrono::Utc::now().timestamp_nanos()
+                        uuid::Uuid::new_v4(),
                     );
 
                     let repo: Repository = match payload.repository.try_into() {
