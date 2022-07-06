@@ -165,6 +165,11 @@ OPTIONS:
 
 ## Development
 
+[nix](https://nixos.org) is used to provide the development & build
+environment, but it's also possible to manually provide the dependencies.
+
+Run `nix develop` to start a development shell.
+
 ### Building
 
 ```sh
