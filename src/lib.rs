@@ -1,5 +1,5 @@
-pub mod job;
 pub mod api;
+pub mod job;
 mod local_queue;
 
 pub use job::Job;

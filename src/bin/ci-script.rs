@@ -1,8 +1,8 @@
-use structopt::StructOpt;
 use anyhow::Result;
-use thiserror::Error;
 use octocrab::Octocrab;
 use std::convert::TryInto;
+use structopt::StructOpt;
+use thiserror::Error;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "ci-scripts", about = "Run CI scripts, like from a CI/CD job")]
@@ -44,7 +44,8 @@ async fn main() -> Result<()> {
         .init();
 
     let master_client = get_github_client(opt.github_app_id, &opt.github_app_key)?;
-    let gh_client = get_github_repo_client(&master_client, &opt.github_owner, &opt.github_name).await?;
+    let gh_client =
+        get_github_repo_client(&master_client, &opt.github_owner, &opt.github_name).await?;
     let gh_repo = get_github_repo(&gh_client, &opt.github_owner, &opt.github_name).await?;
     let command: Vec<String> = {
         let mut x = vec![opt.script.to_string_lossy().into_owned()];
@@ -79,18 +80,37 @@ enum Error {
     NoAccessTokenURL,
 }
 
-async fn get_github_repo_client<O: AsRef<str>, N: AsRef<str>>(gh_client: &octocrab::Octocrab, _owner: O, _name: N) -> Result<octocrab::Octocrab> {
+async fn get_github_repo_client<O: AsRef<str>, N: AsRef<str>>(
+    gh_client: &octocrab::Octocrab,
+    _owner: O,
+    _name: N,
+) -> Result<octocrab::Octocrab> {
     // TODO: Consider requesting a token with more fine-grained access.
     // TODO: Figure out what installation to use instead of hardcoding
     use octocrab::params::apps::CreateInstallationAccessToken;
     let installations = gh_client.apps().installations().send().await?.take_items();
     let mut access_token_req = CreateInstallationAccessToken::default();
-    access_token_req.repositories = vec!();
-    let access_token_url = installations[0].access_tokens_url.as_ref().ok_or(Error::NoAccessTokenURL)?;
-    let access: octocrab::models::InstallationToken = gh_client.post(access_token_url, Some(&access_token_req)).await?;
-    Ok(octocrab::OctocrabBuilder::new().personal_token(access.token).build()?)
+    access_token_req.repositories = vec![];
+    let access_token_url = installations[0]
+        .access_tokens_url
+        .as_ref()
+        .ok_or(Error::NoAccessTokenURL)?;
+    let access: octocrab::models::InstallationToken = gh_client
+        .post(access_token_url, Some(&access_token_req))
+        .await?;
+    Ok(octocrab::OctocrabBuilder::new()
+        .personal_token(access.token)
+        .build()?)
 }
 
-async fn get_github_repo<O: AsRef<str>, N: AsRef<str>>(gh_client: &octocrab::Octocrab, owner: O, name: N) -> Result<ci_script::job::Repository> {
-    Ok(gh_client.repos(owner.as_ref(), name.as_ref()).get().await?.try_into()?)
+async fn get_github_repo<O: AsRef<str>, N: AsRef<str>>(
+    gh_client: &octocrab::Octocrab,
+    owner: O,
+    name: N,
+) -> Result<ci_script::job::Repository> {
+    Ok(gh_client
+        .repos(owner.as_ref(), name.as_ref())
+        .get()
+        .await?
+        .try_into()?)
 }

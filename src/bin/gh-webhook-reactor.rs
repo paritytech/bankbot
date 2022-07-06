@@ -1,16 +1,19 @@
-use ci_script::{Job, LocalQueue, Queue, job::Repository};
 use async_std::sync::{Arc, Mutex};
+use ci_script::{job::Repository, Job, LocalQueue, Queue};
+use octocrab::params::apps::CreateInstallationAccessToken;
+use octocrab::Octocrab;
 use std::convert::TryInto;
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
-use tide::prelude::*;
 use thiserror::Error;
+use tide::prelude::*;
 use tide_github::Event;
-use octocrab::Octocrab;
-use octocrab::params::apps::CreateInstallationAccessToken;
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "ci-script", about = "Simply automate your CI needs with the powers of the CI Scripting Language")]
+#[structopt(
+    name = "ci-script",
+    about = "Simply automate your CI needs with the powers of the CI Scripting Language"
+)]
 struct Config {
     /// Github Webhook secret
     #[structopt(short, long, env, hide_env_values = true)]
@@ -106,7 +109,7 @@ fn prepare_command(command: Vec<String>) -> Result<Vec<String>, Error> {
         .ok_or(Error::NoCmd)?;
     let mut args: Vec<String> = command.into_iter().skip(2).collect();
     let script_path = String::from(Path::new(".github").join(dir).join(file).to_string_lossy());
-    let mut res = vec!(script_path);
+    let mut res = vec![script_path];
     res.append(&mut args);
     Ok(res)
 }
@@ -138,16 +141,17 @@ async fn main() -> tide::Result<()> {
                     let command = body
                         .split_once('\n')
                         .map(|(cmd, _)| cmd.into())
-                        .map(|cmd| shell_words::split(cmd).expect("Failed to split command as shell words"))
-                        .unwrap_or_else(|| body.split(" ").map(|x| x.to_string()).collect())
-                        ;
+                        .map(|cmd| {
+                            shell_words::split(cmd).expect("Failed to split command as shell words")
+                        })
+                        .unwrap_or_else(|| body.split(" ").map(|x| x.to_string()).collect());
 
                     let command = match prepare_command(command) {
                         Ok(command) => command,
                         Err(e) => {
                             log::warn!("Failed to determine command: {e}");
                             return;
-                        },
+                        }
                     };
 
                     let id = format!(
@@ -173,7 +177,9 @@ async fn main() -> tide::Result<()> {
                     };
 
                     let q = queue.clone();
-                    async_std::task::spawn (async move { q.lock().await.add(id, job); });
+                    async_std::task::spawn(async move {
+                        q.lock().await.add(id, job);
+                    });
                 }
             }
         })
@@ -192,7 +198,6 @@ async fn main() -> tide::Result<()> {
         Octocrab::builder().personal_token(token).build()?
     };
 
-
     let tokio_rt = tokio::runtime::Runtime::new()?;
     async_std::task::spawn(async move {
         async fn run<P: AsRef<std::path::Path> + AsRef<std::ffi::OsStr>>(
@@ -203,7 +208,9 @@ async fn main() -> tide::Result<()> {
         ) -> anyhow::Result<()> {
             //let github = Arc::try_unwrap(github_client).into_inner();
             //let github = std::sync::Arc::new(std::sync::Mutex::new(github));
-            job.checkout(&repos_root)?.prepare_script(github_client)?.run()?;
+            job.checkout(&repos_root)?
+                .prepare_script(github_client)?
+                .run()?;
             Ok(())
         }
 
@@ -221,21 +228,38 @@ async fn main() -> tide::Result<()> {
                 Ok(ref job) => {
                     log::info!(
                         "Processing command {} in repo {}",
-                        job.command.join(" "), job.repository.url
+                        job.command.join(" "),
+                        job.repository.url
                     );
 
                     // TODO: Fix block_on
                     let gh_client = github_client.clone();
                     let github_installation_client = match rt_handle.block_on(async move {
-                        let installations = gh_client.apps().installations().send().await.unwrap().take_items();
+                        let installations = gh_client
+                            .apps()
+                            .installations()
+                            .send()
+                            .await
+                            .unwrap()
+                            .take_items();
                         let mut access_token_req = CreateInstallationAccessToken::default();
-                        access_token_req.repository_ids = vec!(job.repository.id);
+                        access_token_req.repository_ids = vec![job.repository.id];
                         // TODO: Properly fill-in installation
-                        let access: octocrab::models::InstallationToken = gh_client.post(installations[0].access_tokens_url.as_ref().unwrap(), Some(&access_token_req)).await?;
-                        octocrab::OctocrabBuilder::new().personal_token(access.token).build()
+                        let access: octocrab::models::InstallationToken = gh_client
+                            .post(
+                                installations[0].access_tokens_url.as_ref().unwrap(),
+                                Some(&access_token_req),
+                            )
+                            .await?;
+                        octocrab::OctocrabBuilder::new()
+                            .personal_token(access.token)
+                            .build()
                     }) {
                         Ok(github_installation_client) => github_installation_client,
-                        _ => { log::warn!("Failed to require octocrab Github client"); return },
+                        _ => {
+                            log::warn!("Failed to require octocrab Github client");
+                            return;
+                        }
                     };
 
                     let repo_owner = job.repository.owner.login.clone();
@@ -254,14 +278,18 @@ async fn main() -> tide::Result<()> {
                             match rt_handle.block_on(async {
                                 github_installation_client
                                     .issues(&repo_owner, &repo_name)
-                                    .create_comment(issue_nr, format!("Error running job: {job_err}")).await
+                                    .create_comment(
+                                        issue_nr,
+                                        format!("Error running job: {job_err}"),
+                                    )
+                                    .await
                             }) {
-                                Ok(_) => {},
+                                Ok(_) => {}
                                 Err(err) => log::warn!("Failed to comment on issue: {err}"),
                             };
                         };
                     };
-                },
+                }
                 Err(e) => log::warn!("Failed to retrieve job from queue: {}", e),
             }
         }

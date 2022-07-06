@@ -1,10 +1,10 @@
-use std::sync::{Arc, Mutex};
+use crate::api;
 use git2::build::{CheckoutBuilder, RepoBuilder};
 use octocrab::models::issues::Issue;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use crate::api;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -196,71 +196,79 @@ impl CheckedoutJob {
                 api::Issue::create_comment::<rhai::ImmutableString>,
             );
 
-        engine.register_type::<api::git::Git>()
+        engine
+            .register_type::<api::git::Git>()
             .register_result_fn("clone", api::git::Git::clone::<String>)
             .register_result_fn("clone", api::git::Git::clone::<&str>)
-            .register_result_fn("clone", api::git::Git::clone::<rhai::ImmutableString>)
-        ;
+            .register_result_fn("clone", api::git::Git::clone::<rhai::ImmutableString>);
 
-        //let git = exported_module!(api::git::Git);
-
-        engine.register_type::<api::git::LocalRepo>()
+        engine
+            .register_type::<api::git::LocalRepo>()
             .register_result_fn("read", api::git::LocalRepo::read_file::<PathBuf>)
-            .register_result_fn("read", api::git::LocalRepo::read_file::<api::git::DirEntryPath>)
+            .register_result_fn(
+                "read",
+                api::git::LocalRepo::read_file::<api::git::DirEntryPath>,
+            )
             .register_result_fn("read", api::git::LocalRepo::read_file::<&Path>)
             .register_result_fn("read", api::git::LocalRepo::read_file::<String>)
             .register_result_fn("read", api::git::LocalRepo::read_file::<&str>)
             .register_result_fn("write", api::git::LocalRepo::write_file::<PathBuf>)
-            .register_result_fn("write", api::git::LocalRepo::write_file::<api::git::DirEntryPath>)
-            /*
-            .register_result_fn("write", api::git::LocalRepo::write_file::<PathBuf, &[u8]>)
-            .register_result_fn("write", api::git::LocalRepo::write_file::<&Path, &[u8]>)
-            .register_result_fn("write", api::git::LocalRepo::write_file::<String, &[u8]>)
-            .register_result_fn("write", api::git::LocalRepo::write_file::<&str, &[u8]>)
-            */
+            .register_result_fn(
+                "write",
+                api::git::LocalRepo::write_file::<api::git::DirEntryPath>,
+            )
             .register_result_fn("ls", api::git::LocalRepo::list_files)
             .register_result_fn("ls", api::git::LocalRepo::list_files_in_dir::<PathBuf>)
             .register_result_fn("ls", api::git::LocalRepo::list_files_in_dir::<&Path>)
             .register_result_fn("ls", api::git::LocalRepo::list_files_in_dir::<String>)
             .register_result_fn("ls", api::git::LocalRepo::list_files_in_dir::<&str>)
-            /*
-            .register_result_fn("add", api::git::LocalRepo::add::<PathBuf>)
-            .register_result_fn("add", api::git::LocalRepo::add::<String>)
-            .register_result_fn("add", api::git::LocalRepo::add::<&Path>)
-            .register_result_fn("add", api::git::LocalRepo::add::<&str>)
-            */
             .register_result_fn("add", api::git::LocalRepo::add::<api::git::DirEntryPath>)
             .register_result_fn("ls-modified", api::git::LocalRepo::list_modified)
             .register_result_fn("status", api::git::LocalRepo::pub_status)
             .register_result_fn("commit", api::git::LocalRepo::pub_commit::<String>)
             .register_result_fn("branch", api::git::LocalRepo::pub_branch::<String>)
             .register_result_fn("branch", api::git::LocalRepo::pub_branch::<&str>)
-            .register_result_fn("branch", api::git::LocalRepo::pub_branch::<rhai::ImmutableString>)
+            .register_result_fn(
+                "branch",
+                api::git::LocalRepo::pub_branch::<rhai::ImmutableString>,
+            )
+            .register_result_fn("current_branch", api::git::LocalRepo::pub_current_branch)
             .register_result_fn("push", api::git::LocalRepo::pub_push::<String, String>)
             .register_result_fn("push", api::git::LocalRepo::pub_push::<&str, &str>)
-            .register_result_fn("push", api::git::LocalRepo::pub_push::<rhai::ImmutableString, rhai::ImmutableString>)
-            .register_result_fn("create_pr", api::git::LocalRepo::pub_create_pr)
-            ;
+            .register_result_fn(
+                "push",
+                api::git::LocalRepo::pub_push::<rhai::ImmutableString, rhai::ImmutableString>,
+            )
+            .register_result_fn("create_pr", api::git::LocalRepo::pub_create_pr);
 
-        engine.register_type::<api::git::DirEntry>()
+        engine
+            .register_type::<api::git::DirEntry>()
             .register_get("path", api::git::DirEntry::get_path)
             .register_fn("is_file", api::git::DirEntry::is_file)
             .register_fn("is_dir", api::git::DirEntry::is_dir)
-            .register_fn("is_symlink", api::git::DirEntry::is_symlink)
-            ;
+            .register_fn("is_symlink", api::git::DirEntry::is_symlink);
 
-        engine.register_type::<api::git::Status>()
+        engine
+            .register_type::<api::git::Status>()
             .register_result_fn("changed", api::git::Status::pub_changed)
             .register_result_fn("added", api::git::Status::pub_added)
-            .register_result_fn("deleted", api::git::Status::pub_deleted)
-            ;
+            .register_result_fn("deleted", api::git::Status::pub_deleted);
 
-        engine.register_type::<api::git::DirEntryPath>()
-            .register_fn("strip_prefix", api::git::DirEntryPath::strip_prefix::<PathBuf>)
-            .register_fn("strip_prefix", api::git::DirEntryPath::strip_prefix::<&Path>)
-            .register_fn("strip_prefix", api::git::DirEntryPath::strip_prefix::<String>)
-            .register_fn("strip_prefix", api::git::DirEntryPath::strip_prefix::<&str>)
-            ;
+        engine
+            .register_type::<api::git::DirEntryPath>()
+            .register_fn(
+                "strip_prefix",
+                api::git::DirEntryPath::strip_prefix::<PathBuf>,
+            )
+            .register_fn(
+                "strip_prefix",
+                api::git::DirEntryPath::strip_prefix::<&Path>,
+            )
+            .register_fn(
+                "strip_prefix",
+                api::git::DirEntryPath::strip_prefix::<String>,
+            )
+            .register_fn("strip_prefix", api::git::DirEntryPath::strip_prefix::<&str>);
 
         Ok(engine)
     }
@@ -283,15 +291,27 @@ impl CheckedoutJob {
             let repo_owner = self.gh_repo.owner.login.clone();
             if let Some(gh_issue) = self.gh_issue {
                 let issue = api::Issue::new(client.clone(), self.gh_repo, gh_issue);
-                scope.push_constant("issue", issue);
+                scope.push_constant("ISSUE", issue);
             }
             log::debug!("local repo dir: {:?}", &self.dir);
             let local_repo = git2::Repository::open(&self.dir)?;
-            let repo = api::git::LocalRepo::new(&self.dir, repo_owner, repo_name, local_repo, client.clone());
+            let repo = api::git::LocalRepo::new(
+                &self.dir,
+                repo_owner,
+                repo_name,
+                local_repo,
+                client.clone(),
+            );
             scope.push_constant("REPO", repo);
             // TODO: replace with proper module export
-            let git = api::git::Git{path: self.dir.clone(), root: self.clone_dir, github_client: client};
+            let git = api::git::Git {
+                path: self.dir.clone(),
+                root: self.clone_dir,
+                github_client: client,
+            };
             scope.push_constant("Git", git);
+            let env: api::env::Vars = std::env::vars().collect();
+            scope.push_constant("ENV", env);
             Box::new(scope)
         };
 
@@ -322,12 +342,26 @@ impl RunnableJob<'_> {
 
         // We don't want to leak any internal fs details
         //let ast = self.engine.compile_file(self.dir.join(self.script_path.clone()))
-        let ast = self.engine.compile_file(self.script_path.clone())
+        let ast = self
+            .engine
+            .compile_file(self.script_path.clone())
             // Don't leak in the internal path
-            .map_err(|e| Error::ScriptExecution(format!("{e}").into()))
-            ?;
+            .map_err(|e| Error::ScriptExecution(format!("{e}").into()))?;
 
         self.engine.run_ast_with_scope(&mut self.scope, &ast)?;
         Ok(())
+    }
+}
+
+use rhai::plugin::*;
+
+#[export_module]
+mod cargo {
+    /// Patch the relative dependencies (`{ path = "../../bla", ... }`) in the given TOML to the
+    /// given git url and branch.
+    // TODO: Come up with a more elegant & generic design instead of this quick hacky interface to
+    // quickly serve the substrate needs.
+    pub fn patch_dependencies(toml: &str) -> String {
+        todo!()
     }
 }

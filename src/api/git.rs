@@ -1,10 +1,10 @@
-use thiserror::Error;
-use std::sync::mpsc::channel;
-use std::path::{Path, PathBuf};
 use git2::build::{CheckoutBuilder, RepoBuilder};
-use std::sync::{Arc, Mutex};
-use std::convert::TryInto;
 use std::convert::TryFrom;
+use std::convert::TryInto;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -29,16 +29,19 @@ pub enum Error {
     #[error("Failed to retrieve Github access token: {0}")]
     NoAccessToken(String),
     #[error("Failed to receive access token through channel: {source}")]
-    ChannelRecvFailure{
+    ChannelRecvFailure {
         #[from]
         source: std::sync::mpsc::RecvError,
     },
-    #[error("Error talking to Github: {source}")]   GithubApiError {
+    #[error("Error talking to Github: {source}")]
+    GithubApiError {
         #[from]
         source: octocrab::Error,
     },
     #[error("Given name is not a valid Github repo name (`owner/repo`)")]
     InvalidGithubRepoName,
+    #[error("Current branch name contains invalid UTF-8")]
+    CurrentBranchInvalidUTF8,
 }
 
 impl From<std::sync::PoisonError<std::sync::MutexGuard<'_, git2::Repository>>> for Error {
@@ -62,14 +65,23 @@ pub struct Git {
 impl Git {
     // To make the common case both easy and efficient this function both clones and
     // fetches/checksout a ref.
-    pub fn clone<S: AsRef<str>>(&mut self, repo: String, head: S) -> Result<LocalRepo, Box<rhai::EvalAltResult>> {
+    pub fn clone<S: AsRef<str>>(
+        &mut self,
+        repo: String,
+        head: S,
+    ) -> Result<LocalRepo, Box<rhai::EvalAltResult>> {
         let url = format!("https://github.com/{}", repo);
-        let (repo_owner, repo_name) = repo.split_at(repo.find('/').ok_or(format!("Invalid Github Repository name (`owner/repo`)"))?);
+        let (repo_owner, repo_name) = repo.split_at(
+            repo.find('/')
+                .ok_or(format!("Invalid Github Repository name (`owner/repo`)"))?,
+        );
         let mut repo_name = String::from(repo_name);
         repo_name.remove(0); // Remove the '/'
         let dir = self.repo_dir(&url);
         let repo = match std::fs::metadata(&dir) {
-            Ok(metadata) if metadata.is_dir() => git2::Repository::open(&dir).map_err(|e| format!("{e}"))?,
+            Ok(metadata) if metadata.is_dir() => {
+                git2::Repository::open(&dir).map_err(|e| format!("{e}"))?
+            }
             Err(_) => {
                 // Path doesn't exist
                 let mut checkout = CheckoutBuilder::new();
@@ -77,7 +89,8 @@ impl Git {
                 log::info!("Cloning {} to {:?}", &url, &dir);
                 RepoBuilder::new()
                     .with_checkout(checkout)
-                    .clone(url.as_ref(), &dir).map_err(|e| format!("{e}"))?
+                    .clone(url.as_ref(), &dir)
+                    .map_err(|e| format!("{e}"))?
             }
             Ok(_) => {
                 let err = format!("Path {:?} exists but is not a directory", dir);
@@ -85,7 +98,15 @@ impl Git {
                 return Err(Box::new(err.into()));
             }
         };
-        let repo = LocalRepo::with_repo(dir, repo_owner, repo_name, head.as_ref(), repo, self.github_client.clone())?;
+
+        let repo = LocalRepo::with_repo(
+            dir,
+            repo_owner,
+            repo_name,
+            head.as_ref(),
+            repo,
+            self.github_client.clone(),
+        )?;
         log::info!("Constructed local repo {:?}", repo.dir);
         Ok(repo)
     }
@@ -94,10 +115,7 @@ impl Git {
         log::info!("repos_root: {:?}", &self.root);
         let full_path = PathBuf::from(&self.root);
         let url = format!("{url}").replace('/', "_");
-        let dir_name = format!(
-            "{}",
-            &url,
-        );
+        let dir_name = format!("{}", &url,);
         let full_path = full_path.join(dir_name);
         log::debug!("full_path: {:?}", full_path);
         full_path
@@ -129,7 +147,13 @@ struct Config {
 
 impl LocalRepo {
     //pub(crate) fn new<P: AsRef<Path>, N: AsRef<str>>(dir: P, repo_name: N, repo: git2::Repository, github: Arc<Mutex<octocrab::Octocrab>>, tokio_handle: tokio::runtime::Handle) -> LocalRepo {
-    pub(crate) fn new<P: AsRef<Path>, O: AsRef<str>, N: AsRef<str>>(dir: P, repo_owner: O, repo_name: N, repo: git2::Repository, github: Arc<Mutex<octocrab::Octocrab>>) -> LocalRepo {
+    pub(crate) fn new<P: AsRef<Path>, O: AsRef<str>, N: AsRef<str>>(
+        dir: P,
+        repo_owner: O,
+        repo_name: N,
+        repo: git2::Repository,
+        github: Arc<Mutex<octocrab::Octocrab>>,
+    ) -> LocalRepo {
         LocalRepo {
             dir: PathBuf::from(dir.as_ref()),
             repo: Arc::new(Mutex::new(repo)),
@@ -142,8 +166,14 @@ impl LocalRepo {
     }
 
     //fn with_repo<P: AsRef<Path>, S: AsRef<str>, R: AsRef<str>>(dir: P, repo_name: R, head: S, repo: git2::Repository, github_client: Arc<Mutex<octocrab::Octocrab>>, tokio_handle: tokio::runtime::Handle) -> Result<LocalRepo, Box<rhai::EvalAltResult>>
-    fn with_repo<P: AsRef<Path>, S: AsRef<str>, O: AsRef<str>, N: AsRef<str>>(dir: P, repo_owner: O, repo_name: N, head: S, repo: git2::Repository, github_client: Arc<Mutex<octocrab::Octocrab>>) -> Result<LocalRepo, Box<rhai::EvalAltResult>>
-    {
+    fn with_repo<P: AsRef<Path>, S: AsRef<str>, O: AsRef<str>, N: AsRef<str>>(
+        dir: P,
+        repo_owner: O,
+        repo_name: N,
+        head: S,
+        repo: git2::Repository,
+        github_client: Arc<Mutex<octocrab::Octocrab>>,
+    ) -> Result<LocalRepo, Box<rhai::EvalAltResult>> {
         let mut s = LocalRepo {
             dir: PathBuf::from(dir.as_ref()),
             repo: Arc::new(Mutex::new(repo)),
@@ -153,25 +183,23 @@ impl LocalRepo {
             github_name: String::from(repo_name.as_ref()),
             //tokio_handle,
         };
-        s.checkout_remote_head(head.as_ref()).map_err(|e| format!("{e}"))?;
+        s.checkout_remote_head(head.as_ref())
+            .map_err(|e| format!("{e}"))?;
         Ok(s)
     }
 
     // TODO: Return some kind of PR object
-    fn create_pr(&self, title: impl Into<String>, body: impl Into<String>, head: impl Into<String>, base: impl Into<String>) -> Result<(), Error> {
-        /*
-        let pr = async_global_executor::spawn(async {
-            self.github_client.lock()?
-                .pulls(&self.github_owner, &self.github_name)
-                .create(title, head, base)
-                .body(body)
-                .send()
-        });
-        async_global_executor::block_on(async { pr.await });
-        */
+    fn create_pr(
+        &self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        head: impl Into<String>,
+        base: impl Into<String>,
+    ) -> Result<(), Error> {
         let token = self.get_access_token()?;
-        let gh_client = octocrab::OctocrabBuilder::new().personal_token(token).build()?;
-        println!("name: {}", self.github_name);
+        let gh_client = octocrab::OctocrabBuilder::new()
+            .personal_token(token)
+            .build()?;
         futures_lite::future::block_on(async {
             let owner = self.github_owner.clone();
             let name = self.github_name.clone();
@@ -185,8 +213,15 @@ impl LocalRepo {
         Ok(())
     }
 
-    pub fn pub_create_pr(&mut self, title: String, body: String, head: String, base: String) -> Result<(), Box<rhai::EvalAltResult>> {
-        self.create_pr(title, body, head, base).map_err(|e| format!("{e}").into())
+    pub fn pub_create_pr(
+        &mut self,
+        title: String,
+        body: String,
+        head: String,
+        base: String,
+    ) -> Result<(), Box<rhai::EvalAltResult>> {
+        self.create_pr(title, body, head, base)
+            .map_err(|e| format!("{e}").into())
     }
 
     // fetch and checkout/reset remote head (branch)
@@ -196,11 +231,7 @@ impl LocalRepo {
         log::info!("Fetching {} in {:?}", head, self.dir);
         //self.repo.lock()?.find_remote("origin")?.fetch(
         let mut remote = repo.find_remote("origin")?;
-        remote.fetch(
-            &[&format!("refs/{}:refs/heads/{}", head, head)],
-            None,
-            None,
-        )?;
+        remote.fetch(&[&format!("refs/{}:refs/heads/{}", head, head)], None, None)?;
 
         let rev = repo.revparse_single(head)?;
         repo.reset(
@@ -222,7 +253,11 @@ impl LocalRepo {
         self.checkout_new_branch_target(name, "HEAD")
     }
 
-    pub fn checkout_new_branch_target<N: AsRef<str>, T: AsRef<str>>(&mut self, name: N, target: T) -> Result<(), Error> {
+    pub fn checkout_new_branch_target<N: AsRef<str>, T: AsRef<str>>(
+        &mut self,
+        name: N,
+        target: T,
+    ) -> Result<(), Error> {
         let repo = self.repo.lock()?;
         let target_obj = repo.revparse_ext(target.as_ref())?;
         let target = target_obj.0.peel_to_commit()?;
@@ -239,10 +274,8 @@ impl LocalRepo {
             path.to_path_buf()
         };
         match path.canonicalize() {
-            Ok(path) if path.starts_with(&self.dir) => {
-                Ok(path)
-            },
-            _ => Err(Error::NotFound)
+            Ok(path) if path.starts_with(&self.dir) => Ok(path),
+            _ => Err(Error::NotFound),
         }
     }
 
@@ -250,7 +283,10 @@ impl LocalRepo {
     // `impl Into<Box<rhai::EvalAltResult>>` or something.
 
     // NOTE: every function available in rhai should receive `&mut self`
-    pub fn read_file<P: AsRef<Path>>(&mut self, path: P) -> Result<Vec<u8>, Box<rhai::EvalAltResult>> {
+    pub fn read_file<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+    ) -> Result<Vec<u8>, Box<rhai::EvalAltResult>> {
         let path = path.as_ref();
         log::debug!("Reading file (before normalization): {:?}", path);
         let path = self.get_full_path(path)?;
@@ -262,9 +298,17 @@ impl LocalRepo {
     }
 
     //pub fn write_file<P: AsRef<Path>, B: AsRef<[u8]>>(&mut self, path: P, contents: B) -> Result<(), Box<rhai::EvalAltResult>> {
-    pub fn write_file<P: AsRef<Path>>(&mut self, path: P, contents: rhai::Blob) -> Result<(), Box<rhai::EvalAltResult>> {
+    pub fn write_file<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        contents: rhai::Blob,
+    ) -> Result<(), Box<rhai::EvalAltResult>> {
         let path = path.as_ref();
-        if path.components().collect::<Vec<_>>().contains(&std::path::Component::ParentDir) {
+        if path
+            .components()
+            .collect::<Vec<_>>()
+            .contains(&std::path::Component::ParentDir)
+        {
             return Err(format!("no `../` allowed in path names").into());
         }
         /*
@@ -281,7 +325,10 @@ impl LocalRepo {
     }
 
     fn get_full_path<P: AsRef<Path>>(&self, path: P) -> Result<PathBuf, Box<rhai::EvalAltResult>> {
-        match self.normalize_path(self.dir.join(&path)).map_err(|e| format!("{e}")) {
+        match self
+            .normalize_path(self.dir.join(&path))
+            .map_err(|e| format!("{e}"))
+        {
             Ok(path) if path.starts_with(&self.dir) => Ok(path),
             Ok(path) => Err(format!("Path leads outside root: {}", path.to_string_lossy()).into()),
             Err(err) => Err(err.into()),
@@ -295,27 +342,30 @@ impl LocalRepo {
     // `list_files` and `list_files_in_dir` will register to the same function (with an
     // optional parameter)
     // NOTE: every function available in rhai should receive `&mut self`
-    pub fn list_files_in_dir<P: AsRef<Path>>(&mut self, dir: P) -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
+    pub fn list_files_in_dir<P: AsRef<Path>>(
+        &mut self,
+        dir: P,
+    ) -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
         let path = self.get_full_path(dir)?;
         log::debug!("More specifically, listing files in {:?}", path);
-        Ok(
-            std::fs::read_dir(path).map_err(|e| format!("{e}"))?
-                .filter_map(|entry| {
-                    match entry {
-                        Ok(entry) => {
-                            let metadata = entry.metadata().ok()?;
-                            let path = entry.path().strip_prefix(&self.dir).ok()?.to_path_buf();
-                            Some(DirEntry {
-                                metadata,
-                                path: DirEntryPath(path),
-                            })
-                            //DirEntry::try_from(entry).ok()
-                        }
-                        Err(_) => None,
+        Ok(std::fs::read_dir(path)
+            .map_err(|e| format!("{e}"))?
+            .filter_map(|entry| {
+                match entry {
+                    Ok(entry) => {
+                        let metadata = entry.metadata().ok()?;
+                        let path = entry.path().strip_prefix(&self.dir).ok()?.to_path_buf();
+                        Some(DirEntry {
+                            metadata,
+                            path: DirEntryPath(path),
+                        })
+                        //DirEntry::try_from(entry).ok()
                     }
-                })
-                .collect::<Vec<_>>().into()
-        )
+                    Err(_) => None,
+                }
+            })
+            .collect::<Vec<_>>()
+            .into())
     }
 
     pub fn add<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Box<rhai::EvalAltResult>> {
@@ -324,11 +374,15 @@ impl LocalRepo {
         let repo = self.repo.lock().map_err(|e| format!("{e}"))?;
         let mut index = repo.index().map_err(|e| format!("{e}"))?;
         index.add_path(path).map_err(|e| format!("{e}"))?;
+        index.write().map_err(|e| format!("{e}"))?;
         Ok(())
     }
 
-    pub fn add_list<'a, I: IntoIterator<Item = &'a Path>>(&mut self, paths: I) -> Result<(), Box<rhai::EvalAltResult>> {
-        let mut errors = vec!();
+    pub fn add_list<'a, I: IntoIterator<Item = &'a Path>>(
+        &mut self,
+        paths: I,
+    ) -> Result<(), Box<rhai::EvalAltResult>> {
+        let mut errors = vec![];
         paths.into_iter().for_each(|path| {
             if let Err(err) = self.add(path).map_err(|e| format!("{e}")) {
                 errors.push(err);
@@ -344,7 +398,7 @@ impl LocalRepo {
     fn commit<S: AsRef<str>>(&mut self, message: S) -> Result<(), Error> {
         let repo = self.repo.lock()?;
         let signature = match &self.config {
-            Some(Config{name, email}) => git2::Signature::now(name, email)?,
+            Some(Config { name, email }) => git2::Signature::now(name, email)?,
             None => git2::Signature::now("ci-script (TODO: Changeme)", "changeme@parity.io")?,
         };
         let rev = repo.revparse_single("HEAD")?;
@@ -352,17 +406,31 @@ impl LocalRepo {
         let mut index = repo.index()?;
         let oid = index.write_tree()?;
         let tree = repo.find_tree(oid)?;
-        repo.commit(Some("HEAD"), &signature, &signature, message.as_ref(), &tree, &[&commit])?;
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message.as_ref(),
+            &tree,
+            &[&commit],
+        )?;
         Ok(())
     }
 
-    pub fn pub_commit<S: AsRef<str>>(&mut self, message: S) -> Result<(), Box<rhai::EvalAltResult>> {
+    pub fn pub_commit<S: AsRef<str>>(
+        &mut self,
+        message: S,
+    ) -> Result<(), Box<rhai::EvalAltResult>> {
         self.commit(message).map_err(|e| format!("{e}").into())
     }
 
     pub fn list_modified(&self) -> Result<Vec<PathBuf>, Box<rhai::EvalAltResult>> {
         let repo = self.repo.lock().map_err(|e| format!("{e}"))?;
-        let list = repo.statuses(Some(git2::StatusOptions::default().include_unmodified(false))).map_err(|e| format!("{e}"))?
+        let list = repo
+            .statuses(Some(
+                git2::StatusOptions::default().include_unmodified(false),
+            ))
+            .map_err(|e| format!("{e}"))?
             .iter()
             .filter_map(|entry| entry.path().map(PathBuf::from))
             .collect();
@@ -373,17 +441,33 @@ impl LocalRepo {
         let github_client = self.github_client.clone();
         futures_lite::future::block_on(async {
             let github_client = github_client.lock().map_err(|_| Error::ExclusiveLock)?;
-            let installations = github_client.apps().installations().send().await?.take_items();
-            let mut access_token_req = octocrab::params::apps::CreateInstallationAccessToken::default();
-            access_token_req.repositories = vec!();
+            let installations = github_client
+                .apps()
+                .installations()
+                .send()
+                .await?
+                .take_items();
+            let mut access_token_req =
+                octocrab::params::apps::CreateInstallationAccessToken::default();
+            access_token_req.repositories = vec![];
             // TODO: Properly fill-in installation
             log::info!("still doing stuff");
-            let access: octocrab::models::InstallationToken = github_client.post(installations[0].access_tokens_url.as_ref().unwrap(), Some(&access_token_req)).await.map_err(|e| Error::NoAccessToken(format!("{e}")))?;
+            let access: octocrab::models::InstallationToken = github_client
+                .post(
+                    installations[0].access_tokens_url.as_ref().unwrap(),
+                    Some(&access_token_req),
+                )
+                .await
+                .map_err(|e| Error::NoAccessToken(format!("{e}")))?;
             Ok(access.token)
         })
     }
 
-    fn push<L: AsRef<str>, R: AsRef<str>>(&mut self, localref: L, _remoteref: R) -> Result<(), Error> {
+    fn push<L: AsRef<str>, R: AsRef<str>>(
+        &mut self,
+        localref: L,
+        _remoteref: R,
+    ) -> Result<(), Error> {
         log::debug!("pushing!");
         let repo = self.repo.lock()?;
         let mut remote = repo.find_remote("origin")?;
@@ -396,15 +480,28 @@ impl LocalRepo {
         std::thread::spawn(move || {
             let res: Result<String, Error> = handle.block_on(async {
                 let github_client = github_client.lock().map_err(|_| Error::ExclusiveLock)?;
-                let installations = github_client.apps().installations().send().await?.take_items();
-                let mut access_token_req = octocrab::params::apps::CreateInstallationAccessToken::default();
-                access_token_req.repositories = vec!();
+                let installations = github_client
+                    .apps()
+                    .installations()
+                    .send()
+                    .await?
+                    .take_items();
+                let mut access_token_req =
+                    octocrab::params::apps::CreateInstallationAccessToken::default();
+                access_token_req.repositories = vec![];
                 // TODO: Properly fill-in installation
                 log::info!("still doing stuff");
-                let access: octocrab::models::InstallationToken = github_client.post(installations[0].access_tokens_url.as_ref().unwrap(), Some(&access_token_req)).await.map_err(|e| Error::NoAccessToken(format!("{e}")))?;
+                let access: octocrab::models::InstallationToken = github_client
+                    .post(
+                        installations[0].access_tokens_url.as_ref().unwrap(),
+                        Some(&access_token_req),
+                    )
+                    .await
+                    .map_err(|e| Error::NoAccessToken(format!("{e}")))?;
                 Ok(access.token)
             });
-            tx.send(res).unwrap_or_else(|e| log::warn!("Failed to send access token through channel: {e}"));
+            tx.send(res)
+                .unwrap_or_else(|e| log::warn!("Failed to send access token through channel: {e}"));
         });
 
         let access_token_res: Result<String, Error> = rx.recv()?;
@@ -420,7 +517,10 @@ impl LocalRepo {
         // TODO: Check if this error handling is sufficient
         //Ok(remote.push::<String>(&[String::from(gitref.as_ref())], Some(&mut push_options))?)
         //if let Err(err) = remote.push::<String>(&[format!("refs/heads/{}", localref.as_ref()), format!("refs/remotes/origin/{}", remoteref.as_ref())], Some(&mut push_options)) {
-        if let Err(err) = remote.push::<String>(&[format!("refs/heads/{}", localref.as_ref())], Some(&mut push_options)) {
+        if let Err(err) = remote.push::<String>(
+            &[format!("refs/heads/{}", localref.as_ref())],
+            Some(&mut push_options),
+        ) {
             log::debug!("Failed to push: {err}");
             Err(err)?
         } else {
@@ -428,29 +528,63 @@ impl LocalRepo {
         }
     }
 
+    /// Make the given branch point to HEAD and perform a clean checkout
     fn branch<B: AsRef<str>>(&mut self, branch: B) -> Result<(), Error> {
         let repo = self.repo.lock()?;
+        let branch = branch.as_ref();
         let head = repo.revparse_single("HEAD")?.peel_to_commit()?;
-        repo.branch(branch.as_ref(), &head, true)?;
+        repo.branch(branch, &head, true)?;
+        repo.set_head(&format!("refs/heads/{branch}"))?;
+        repo.checkout_head(
+            Some(
+                CheckoutBuilder::new()
+                    .remove_untracked(true)
+                    .remove_ignored(true)
+                    .force(),
+            ))?;
         Ok(())
+    }
+
+    fn current_branch(&self) -> Result<String, Error> {
+        let res = self
+            .repo
+            .lock()?
+            .head()?
+            .name()
+            .ok_or(Error::CurrentBranchInvalidUTF8)?
+            .to_string();
+        Ok(res)
+    }
+
+    pub fn pub_current_branch(&mut self) -> Result<String, Box<rhai::EvalAltResult>> {
+        self.current_branch().map_err(|e| format!("{e}").into())
     }
 
     pub fn pub_branch<B: AsRef<str>>(&mut self, branch: B) -> Result<(), Box<rhai::EvalAltResult>> {
         self.branch(branch).map_err(|e| format!("{e}").into())
     }
 
-    pub fn pub_push<L: AsRef<str>, R: AsRef<str>>(&mut self, localref: L, remoteref: R) -> Result<(), Box<rhai::EvalAltResult>> {
-        self.push(localref, remoteref).map_err(|e| format!("{e}").into())
+    pub fn pub_push<L: AsRef<str>, R: AsRef<str>>(
+        &mut self,
+        localref: L,
+        remoteref: R,
+    ) -> Result<(), Box<rhai::EvalAltResult>> {
+        self.push(localref, remoteref)
+            .map_err(|e| format!("{e}").into())
     }
 
     fn status(&self) -> Result<Status, Error> {
         let repo = self.repo.clone();
         let statuses = {
             let repo = self.repo.lock()?;
-            let x = repo.statuses(None)?.iter().filter_map(|entry| entry.try_into().ok()).collect::<Vec<StatusEntry>>();
+            let x = repo
+                .statuses(None)?
+                .iter()
+                .filter_map(|entry| entry.try_into().ok())
+                .collect::<Vec<StatusEntry>>();
             x
         };
-        Ok(Status{repo, statuses})
+        Ok(Status { repo, statuses })
     }
 
     pub fn pub_status(&mut self) -> Result<Status, Box<rhai::EvalAltResult>> {
@@ -468,7 +602,10 @@ impl TryFrom<git2::StatusEntry<'_>> for StatusEntry {
     type Error = String;
     fn try_from(entry: git2::StatusEntry) -> Result<StatusEntry, String> {
         let entry = StatusEntry {
-            path: entry.path().ok_or_else(|| "Non-utf8 file path not supported".to_string())?.into(),
+            path: entry
+                .path()
+                .ok_or_else(|| "Non-utf8 file path not supported".to_string())?
+                .into(),
             status: entry.status(),
         };
         Ok(entry)
@@ -530,41 +667,63 @@ pub struct File {
     pub repo: Arc<Mutex<git2::Repository>>,
 }
 
-
 impl Status {
     pub fn pub_changed(&mut self) -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
-        self.changed().map(|e| e.into()).map_err(|e| format!("{e}").into())
+        self.changed()
+            .map(|e| e.into())
+            .map_err(|e| format!("{e}").into())
     }
 
     fn changed(&self) -> Result<Vec<DirEntryPath>, Error> {
-        let files = self.statuses.iter().filter(|entry| {
-            entry.status.is_wt_modified() || entry.status.is_wt_renamed() || entry.status.is_wt_typechange()
-        //}).map(|entry| File { path: entry.path.clone(), repo: self.repo.clone()}).collect();
-        }).map(|entry| DirEntryPath(entry.path.clone())).collect();
+        let files = self
+            .statuses
+            .iter()
+            .filter(|entry| {
+                entry.status.is_wt_modified()
+                    || entry.status.is_wt_renamed()
+                    || entry.status.is_wt_typechange()
+                //}).map(|entry| File { path: entry.path.clone(), repo: self.repo.clone()}).collect();
+            })
+            .map(|entry| DirEntryPath(entry.path.clone()))
+            .collect();
         Ok(files)
     }
 
     pub fn pub_added(&mut self) -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
-        self.added().map(|e| e.into()).map_err(|e| format!("{e}").into())
+        self.added()
+            .map(|e| e.into())
+            .map_err(|e| format!("{e}").into())
     }
 
     fn added(&self) -> Result<Vec<DirEntryPath>, Error> {
-        let files = self.statuses.iter().filter(|entry| {
-            entry.status.is_wt_new()
-        //}).map(|entry| File { path: entry.path.clone(), repo: self.repo.clone() }).collect();
-        }).map(|entry| DirEntryPath(entry.path.clone())).collect();
+        let files = self
+            .statuses
+            .iter()
+            .filter(|entry| {
+                entry.status.is_wt_new()
+                //}).map(|entry| File { path: entry.path.clone(), repo: self.repo.clone() }).collect();
+            })
+            .map(|entry| DirEntryPath(entry.path.clone()))
+            .collect();
         Ok(files)
     }
 
     pub fn pub_deleted(&mut self) -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
-        self.deleted().map(|e| e.into()).map_err(|e| format!("{e}").into())
+        self.deleted()
+            .map(|e| e.into())
+            .map_err(|e| format!("{e}").into())
     }
 
     fn deleted(&self) -> Result<Vec<DirEntryPath>, Error> {
-        let files = self.statuses.iter().filter(|entry| {
-            entry.status.is_wt_deleted()
-        //}).map(|entry| File{ path: entry.path.clone(), repo: self.repo.clone() }).collect();
-        }).map(|entry| DirEntryPath(entry.path.clone())).collect();
+        let files = self
+            .statuses
+            .iter()
+            .filter(|entry| {
+                entry.status.is_wt_deleted()
+                //}).map(|entry| File{ path: entry.path.clone(), repo: self.repo.clone() }).collect();
+            })
+            .map(|entry| DirEntryPath(entry.path.clone()))
+            .collect();
         Ok(files)
     }
 }

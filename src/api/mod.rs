@@ -13,6 +13,7 @@ pub enum Error {
 
 pub mod cargo;
 pub mod git;
+pub mod env;
 
 use crate::job::Repository;
 #[derive(Clone, Debug)]
@@ -36,24 +37,48 @@ impl Issue {
         // TODO: Fix https://github.com/XAMPPRocky/octocrab/issues/99
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build().map_err(|e| format!("{}", e))?;
+            .build()
+            .map_err(|e| format!("{}", e))?;
 
         let github_installation_client = match rt.block_on(async {
             // TODO: Get rid of at least the first unwrap (I just introduced it, used to be a ?
-            let installations = self.client.lock().unwrap().apps().installations().send().await.unwrap().take_items();
-            let mut access_token_req = octocrab::params::apps::CreateInstallationAccessToken::default();
-            access_token_req.repository_ids = vec!(self.repository.id);
+            let installations = self
+                .client
+                .lock()
+                .unwrap()
+                .apps()
+                .installations()
+                .send()
+                .await
+                .unwrap()
+                .take_items();
+            let mut access_token_req =
+                octocrab::params::apps::CreateInstallationAccessToken::default();
+            access_token_req.repository_ids = vec![self.repository.id];
             // TODO: Properly fill-in installation
             // TODO: Get rid of at least the first unwrap (I just introduced it, used to be a ?
-            let access: octocrab::models::InstallationToken = self.client.lock().unwrap().post(installations[0].access_tokens_url.as_ref().unwrap(), Some(&access_token_req)).await?;
-            octocrab::OctocrabBuilder::new().personal_token(access.token).build()
+            let access: octocrab::models::InstallationToken = self
+                .client
+                .lock()
+                .unwrap()
+                .post(
+                    installations[0].access_tokens_url.as_ref().unwrap(),
+                    Some(&access_token_req),
+                )
+                .await?;
+            octocrab::OctocrabBuilder::new()
+                .personal_token(access.token)
+                .build()
         }) {
             Ok(github_installation_client) => github_installation_client,
-            _ => { log::warn!("Failed to require octocrab Github client"); return Err(format!("Failed to require octocrab Github client").into())},
+            _ => {
+                log::warn!("Failed to require octocrab Github client");
+                return Err(format!("Failed to require octocrab Github client").into());
+            }
         };
 
         log::debug!("about to get a list of issues");
-        rt.block_on( async {
+        rt.block_on(async {
             /*
             let page = self.client
                 .lock()
@@ -67,7 +92,13 @@ impl Issue {
 
             github_installation_client
                 .issues(&self.repository.owner.login, &self.repository.name)
-                .create_comment(self.issue.number.try_into().map_err(|e: std::num::TryFromIntError| e.to_string())?, body)
+                .create_comment(
+                    self.issue
+                        .number
+                        .try_into()
+                        .map_err(|e: std::num::TryFromIntError| e.to_string())?,
+                    body,
+                )
                 .await
                 .map_err(|e| e.to_string().into())
         })
@@ -85,4 +116,3 @@ impl Issue {
         }
     }
 }
-
