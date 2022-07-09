@@ -13,7 +13,7 @@ pub enum Error {
 
 pub mod cargo;
 pub mod git;
-pub mod env;
+pub mod rhai;
 
 use crate::job::Repository;
 #[derive(Clone, Debug)]
@@ -29,7 +29,7 @@ impl Issue {
     pub fn create_comment<S: AsRef<str>>(
         &mut self,
         body: S,
-    ) -> Result<octocrab::models::issues::Comment, Box<rhai::EvalAltResult>> {
+    ) -> Result<octocrab::models::issues::Comment, Box<::rhai::EvalAltResult>> {
         // Unfortunately (like I just found out) octocrab depends on reqwest which depends on
         // tokio. Octocrab has an issue to fix that though, which I just might do :D
         //

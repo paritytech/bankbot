@@ -270,6 +270,9 @@ impl CheckedoutJob {
             )
             .register_fn("strip_prefix", api::git::DirEntryPath::strip_prefix::<&str>);
 
+        let module = exported_module!(api::rhai::env);
+        engine.register_static_module("env", module.into());
+
         Ok(engine)
     }
 
@@ -310,8 +313,6 @@ impl CheckedoutJob {
                 github_client: client,
             };
             scope.push_constant("Git", git);
-            let env: api::env::Vars = std::env::vars().collect();
-            scope.push_constant("ENV", env);
             Box::new(scope)
         };
 

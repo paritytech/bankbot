@@ -463,10 +463,9 @@ impl LocalRepo {
         })
     }
 
-    fn push<L: AsRef<str>, R: AsRef<str>>(
+    fn push<L: AsRef<str>>(
         &mut self,
         localref: L,
-        _remoteref: R,
     ) -> Result<(), Error> {
         log::debug!("pushing!");
         let repo = self.repo.lock()?;
@@ -515,8 +514,6 @@ impl LocalRepo {
         push_options.remote_callbacks(callbacks);
         log::debug!("push options including creds callback ready!");
         // TODO: Check if this error handling is sufficient
-        //Ok(remote.push::<String>(&[String::from(gitref.as_ref())], Some(&mut push_options))?)
-        //if let Err(err) = remote.push::<String>(&[format!("refs/heads/{}", localref.as_ref()), format!("refs/remotes/origin/{}", remoteref.as_ref())], Some(&mut push_options)) {
         if let Err(err) = remote.push::<String>(
             &[format!("refs/heads/{}", localref.as_ref())],
             Some(&mut push_options),
@@ -532,8 +529,9 @@ impl LocalRepo {
     fn branch<B: AsRef<str>>(&mut self, branch: B) -> Result<(), Error> {
         let repo = self.repo.lock()?;
         let branch = branch.as_ref();
-        let head = repo.revparse_single("HEAD")?.peel_to_commit()?;
-        repo.branch(branch, &head, true)?;
+        let commit = repo.revparse_single("HEAD")?.peel_to_commit()?;
+        repo.set_head_detached(commit.id())?;
+        repo.branch(branch, &commit, true)?;
         repo.set_head(&format!("refs/heads/{branch}"))?;
         repo.checkout_head(
             Some(
@@ -567,9 +565,8 @@ impl LocalRepo {
     pub fn pub_push<L: AsRef<str>, R: AsRef<str>>(
         &mut self,
         localref: L,
-        remoteref: R,
     ) -> Result<(), Box<rhai::EvalAltResult>> {
-        self.push(localref, remoteref)
+        self.push(localref)
             .map_err(|e| format!("{e}").into())
     }
 
