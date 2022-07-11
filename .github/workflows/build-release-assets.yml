@@ -1,0 +1,24 @@
+---
+name: Binary Release
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    name: Build & Upload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+      - name: Build
+        uses: rust-build/rust-build.action@v1.3.2
+        with:
+          RUSTTARGET: x86_64-unknown-linux-musl
+          UPLOAD_MODE: none
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: cis
+          path: |
+            ${{ steps.compile.outputs.BUILT_ARCHIVE }}
+            ${{ steps.compile.outputs.BUILT_CHECKSUM }}
