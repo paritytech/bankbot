@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
+use rhai::exported_module;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -212,16 +213,26 @@ impl CheckedoutJob {
             .register_result_fn("read", api::git::LocalRepo::read_file::<&Path>)
             .register_result_fn("read", api::git::LocalRepo::read_file::<String>)
             .register_result_fn("read", api::git::LocalRepo::read_file::<&str>)
+
             .register_result_fn("write", api::git::LocalRepo::write_file::<PathBuf>)
             .register_result_fn(
                 "write",
                 api::git::LocalRepo::write_file::<api::git::DirEntryPath>,
             )
+            .register_result_fn("write", api::git::LocalRepo::write_file::<&Path>)
+            .register_result_fn("write", api::git::LocalRepo::write_file::<String>)
+            .register_result_fn("write", api::git::LocalRepo::write_file::<&str>)
+
             .register_result_fn("ls", api::git::LocalRepo::list_files)
             .register_result_fn("ls", api::git::LocalRepo::list_files_in_dir::<PathBuf>)
             .register_result_fn("ls", api::git::LocalRepo::list_files_in_dir::<&Path>)
             .register_result_fn("ls", api::git::LocalRepo::list_files_in_dir::<String>)
             .register_result_fn("ls", api::git::LocalRepo::list_files_in_dir::<&str>)
+            .register_result_fn("ls_files", api::git::LocalRepo::ls_files)
+            .register_result_fn("ls_files", api::git::LocalRepo::ls_files_in_dir::<PathBuf>)
+            .register_result_fn("ls_files", api::git::LocalRepo::ls_files_in_dir::<&Path>)
+            .register_result_fn("ls_files", api::git::LocalRepo::ls_files_in_dir::<String>)
+            .register_result_fn("ls_files", api::git::LocalRepo::ls_files_in_dir::<&str>)
             .register_result_fn("add", api::git::LocalRepo::add::<api::git::DirEntryPath>)
             .register_result_fn("ls-modified", api::git::LocalRepo::list_modified)
             .register_result_fn("status", api::git::LocalRepo::pub_status)
@@ -239,7 +250,8 @@ impl CheckedoutJob {
                 "push",
                 api::git::LocalRepo::pub_push::<rhai::ImmutableString, rhai::ImmutableString>,
             )
-            .register_result_fn("create_pr", api::git::LocalRepo::pub_create_pr);
+            .register_result_fn("create_pr", api::git::LocalRepo::pub_create_pr)
+            .register_result_fn("url", api::git::LocalRepo::pub_url);
 
         engine
             .register_type::<api::git::DirEntry>()
@@ -256,6 +268,8 @@ impl CheckedoutJob {
 
         engine
             .register_type::<api::git::DirEntryPath>()
+            .register_result_fn("file_name", api::git::DirEntryPath::file_name)
+            .register_fn("to_string", api::git::DirEntryPath::to_string)
             .register_fn(
                 "strip_prefix",
                 api::git::DirEntryPath::strip_prefix::<PathBuf>,
@@ -268,10 +282,17 @@ impl CheckedoutJob {
                 "strip_prefix",
                 api::git::DirEntryPath::strip_prefix::<String>,
             )
-            .register_fn("strip_prefix", api::git::DirEntryPath::strip_prefix::<&str>);
+            .register_fn("strip_prefix", api::git::DirEntryPath::strip_prefix::<&str>)
+            .register_fn("==",
+                |item1: &mut api::git::DirEntryPath, item2: rhai::ImmutableString| item1.to_string() == item2
+            );
 
+        engine.register_static_module("env", exported_module!(api::rhai::env).into());
+        engine.register_static_module("cargo_toml", exported_module!(api::rhai::toml).into());
+        /*
         let module = exported_module!(api::rhai::env);
         engine.register_static_module("env", module.into());
+        */
 
         Ok(engine)
     }
@@ -351,18 +372,5 @@ impl RunnableJob<'_> {
 
         self.engine.run_ast_with_scope(&mut self.scope, &ast)?;
         Ok(())
-    }
-}
-
-use rhai::plugin::*;
-
-#[export_module]
-mod cargo {
-    /// Patch the relative dependencies (`{ path = "../../bla", ... }`) in the given TOML to the
-    /// given git url and branch.
-    // TODO: Come up with a more elegant & generic design instead of this quick hacky interface to
-    // quickly serve the substrate needs.
-    pub fn patch_dependencies(toml: &str) -> String {
-        todo!()
     }
 }

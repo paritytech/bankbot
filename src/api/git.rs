@@ -42,6 +42,8 @@ pub enum Error {
     InvalidGithubRepoName,
     #[error("Current branch name contains invalid UTF-8")]
     CurrentBranchInvalidUTF8,
+    #[error("Remote URL contains invalid UTF-8")]
+    RemoteInvalidUTF8,
 }
 
 impl From<std::sync::PoisonError<std::sync::MutexGuard<'_, git2::Repository>>> for Error {
@@ -335,6 +337,26 @@ impl LocalRepo {
         }
     }
 
+    /// Similar to `git ls-files`, list all files in the current repo
+    pub fn ls_files(&mut self) -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
+        self.ls_files_in_dir("./")
+    }
+
+    /// Similar to `git ls-files`, list all files in the given directory of the current repo. This
+    /// will be monomorphised into one function with `ls-files`.
+    pub fn ls_files_in_dir<P: AsRef<Path>>(&mut self, dir: P) -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
+        let dir = dir.as_ref();
+        let path = self.get_full_path(dir)?;
+        Ok(walkdir::WalkDir::new(path).into_iter().filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let metadata = e.metadata().ok()?;
+                let path = e.into_path().to_path_buf();
+                let path = path.strip_prefix(self.get_full_path("./").ok()?).ok()?;
+                Some(DirEntry { metadata, path:  DirEntryPath(path.to_path_buf())})
+            })
+            .filter(|e| e.metadata.is_file()).collect::<Vec<_>>().into())
+    }
+
     pub fn list_files(&mut self) -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
         self.list_files_in_dir("./")
     }
@@ -342,6 +364,7 @@ impl LocalRepo {
     // `list_files` and `list_files_in_dir` will register to the same function (with an
     // optional parameter)
     // NOTE: every function available in rhai should receive `&mut self`
+    /// List all entries in the given directory (non-recursively)
     pub fn list_files_in_dir<P: AsRef<Path>>(
         &mut self,
         dir: P,
@@ -543,6 +566,17 @@ impl LocalRepo {
         Ok(())
     }
 
+    pub fn pub_url(&mut self) -> Result<String, Box<rhai::EvalAltResult>> {
+        let url = self.url().map_err(|e| format!("{}", e))?;
+        Ok(url)
+    }
+
+    fn url(&self) -> Result<String, Error> {
+        let repo = self.repo.lock()?;
+        let remote = repo.find_remote("origin")?;
+        Ok(remote.url().ok_or(Error::RemoteInvalidUTF8)?.into())
+    }
+
     fn current_branch(&self) -> Result<String, Error> {
         let res = self
             .repo
@@ -616,7 +650,7 @@ pub struct Status {
     statuses: Vec<StatusEntry>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DirEntryPath(PathBuf);
 
 impl DirEntryPath {
@@ -625,6 +659,23 @@ impl DirEntryPath {
             Ok(p) => DirEntryPath(p.to_path_buf()),
             Err(_) => DirEntryPath(self.0.clone()),
         }
+    }
+
+    pub fn file_name(&mut self) -> Result<DirEntryPath, Box<rhai::EvalAltResult>> {
+        match self.0.file_name() {
+            Some(file_name) => Ok(DirEntryPath(PathBuf::from(file_name))),
+            None => Err(format!("Path has no file name").into()),
+        }
+    }
+
+    pub fn to_string(&mut self) -> String {
+        format!("{self}")
+    }
+}
+
+impl std::fmt::Display for DirEntryPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.display())
     }
 }
 

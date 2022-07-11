@@ -29,6 +29,8 @@ tokio = { version = "1.17", features = ["rt", "rt-multi-thread", "macros"] }
 async-global-executor = { version = "2.1", features = ["async-io", "tokio"] }
 futures-lite = "1.12"
 uuid = { version = "1.1", features = ["v4"] }
+toml_edit = "0.14"
+walkdir = "2.3"
 
 [[bin]]
 name = "cis"
